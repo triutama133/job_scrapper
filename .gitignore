@@ -1,0 +1,47 @@
+# ============================================
+# Environment & Secrets
+# ============================================
+.env
+.env.*
+!.env.example
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+venv.bak/
+
+# ============================================
+# Data & Database (jangan di-commit)
+# ============================================
+# jobs_data.json berukuran ~20MB — simpan lokal / via Git LFS jika perlu
+jobs_data.json
+jobs_data.json.*
+*.json.bak*
+*.json.tmp
+salary_refetch_progress.json
+
+# Screenshot debug
+*.png
+*.jpg
+*.jpeg
+
+# ============================================
+# Airflow
+# ============================================
+airflow.cfg
+airflow.db
+logs/
+*.pid
+
+# ============================================
+# IDE
+# ============================================
+.idea/
+.vscode/
+*.swp
+.DS_Store
