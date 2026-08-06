@@ -7,16 +7,20 @@ Automated job scraping pipeline for Indonesian job portals (Glints, Kalibrr, Job
 - **Multi-platform scraping**: Glints, Kalibrr, Jobstreet, LinkedIn
 - **Salary extraction**: 
   - Langsung dari elemen halaman portal (mis. `data-automation="job-detail-salary"` untuk Jobstreet)
+  - Sumber berbasis schema: microdata (`itemprop="baseSalary"`) & JSON-LD (`baseSalary`) dengan formatter rapi (`IDR 2.500.000 - 3.500.000 per month`)
   - Fallback heuristik regex dari deskripsi untuk lowongan lama
   - Mendukung `Rp`, `Rp.`, `IDR`, `SGD`, `USD`, `EUR`, `AUD`, `$` + rentang gaji + satuan `juta/jt`
+- **Anti fused-salary**: heuristik melewati elemen hidden/parent `baseSalary` dan menolak deret digit panjang (mencegah angka saling nempel seperti `IDR230000033000002300000`)
 - **Incremental salary refetch** (`salary_refetch.py`):
   - Scrap ulang salary lowongan existing dari halaman yang masih aktif
   - Rate-limit per platform agar tidak kena block IP
   - Checkpoint progress (`salary_refetch_progress.json`) — lanjut dari URL yang belum diproses
+  - Routing browser otomatis: Glints/LinkedIn langsung via Playwright/Camoufox; Jobstreet/Kalibrr via HTTP dengan fallback browser saat kena block (403/429)
   - Fallback ke deskripsi jika link kadaluarsa
   - Upsert batch langsung ke Supabase
+- **Repair fused salary** (`scratch/repair_fused_salaries.py`): scan, deteksi, refetch ulang, dan perbaiki salary yang rusak di `jobs_data.json` (+ opsional Supabase)
 - **ETL**: PySpark transform + upload Supabase (batch 100, upsert on `job_url`)
-- **Airflow DAGs**: scraping terjadwal, link checker, dan salary refetch harian
+- **Airflow DAGs**: scraping terjadwal, link checker, dan salary refetch setiap 2 jam (150 link/run)
 
 ## Struktur Repository
 
@@ -35,18 +39,19 @@ job-scrapper/
 ├── dags/                            # Airflow DAGs
 │   ├── job_scraper_pipeline.py          # Scrape + ETL (setiap 4 jam)
 │   ├── job_link_checker_pipeline.py     # Cek link (harian)
-│   └── job_salary_refetch_pipeline.py   # Refetch salary (harian 02:00)
+│   └── job_salary_refetch_pipeline.py   # Refetch salary (setiap 2 jam, 150 link)
 └── scratch/                         # Utilitas & debugging
     ├── extract_salaries_from_desc.py   # Backfill salary dari deskripsi
     ├── test_salary_regex.py            # Unit test regex salary
     ├── add_salary_column.py            # Migrasi kolom salary
+    ├── repair_fused_salaries.py        # Perbaiki salary fused (angka nempel)
     └── ...
 ```
 
 ## Instalasi
 
 ```bash
-# 1. Buat virtual environment
+# 1. Buat virtual environment (disarankan di root workspace, mis. /home/lightman/Documents/Project/venv)
 python3 -m venv venv
 source venv/bin/activate
 
@@ -90,16 +95,31 @@ Untuk lowongan lama yang belum punya kolom salary:
 python scratch/extract_salaries_from_desc.py
 ```
 
-### 4. Incremental Salary Refetch (disarankan via Airflow)
+### 4. Perbaiki Fused Salary (jika ada data rusak)
+
+Scan & otomatis perbaiki salary yang "fused" (angka saling nempel, contoh `IDR230000033000002300000`):
+
+```bash
+# Dry-run: hanya lihat mana yang fused, tanpa mengubah file
+python scratch/repair_fused_salaries.py --dry-run
+
+# Perbaiki di jobs_data.json (refetch ulang dari halaman portal / deskripsi)
+python scratch/repair_fused_salaries.py
+
+# Perbaiki + sekaligus upload ke Supabase
+python scratch/repair_fused_salaries.py --upload
+```
+
+### 5. Incremental Salary Refetch (disarankan via Airflow)
 
 Scrap ulang salary dari halaman portal yang masih aktif, batasi per run agar tidak kena block IP:
 
 ```bash
-# Proses 250 URL per run
-python salary_refetch.py --batch-size 250
+# Proses 150 URL per run
+python salary_refetch.py --batch-size 150
 
 # Mulai ulang progress dari nol
-python salary_refetch.py --batch-size 250 --reset
+python salary_refetch.py --batch-size 150 --reset
 ```
 
 Pipeline ini:
@@ -109,7 +129,7 @@ Pipeline ini:
 - Simpan checkpoint → run berikutnya lanjut, tidak mengulang URL yang sudah dicoba
 - Upsert ke Supabase setiap batch selesai
 
-### 5. Airflow (Produksi)
+### 6. Airflow (Produksi)
 
 Letakkan folder `dags/` ke instalasi Airflow Anda. DAG yang tersedia:
 
@@ -117,7 +137,7 @@ Letakkan folder `dags/` ke instalasi Airflow Anda. DAG yang tersedia:
 |-----|--------|--------|
 | `job_scraper_and_etl` | Setiap 4 jam | Scrape baru + transform + upload |
 | `job_link_checker_pipeline` | Harian | Cek status link lowongan |
-| `job_salary_refetch_pipeline` | Harian 02:00 | Refetch salary batch 250 URL |
+| `job_salary_refetch_pipeline` | Setiap 2 jam | Refetch salary batch 150 URL |
 
 ## Kolom Database (`jobs` table)
 
@@ -138,4 +158,4 @@ Letakkan folder `dags/` ke instalasi Airflow Anda. DAG yang tersedia:
 
 ## Lisensi
 
-Lihat file LICENSE (jika ada) — proyek internal / privat.
+Lihat file LICENSE (jika ada) — proyek internal / privat.# job_scrapper
