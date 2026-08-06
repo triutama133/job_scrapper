@@ -63,7 +63,6 @@ cp .env.example .env
 # Isi SUPABASE_URL & SUPABASE_KEY (Supabase Dashboard -> Project Settings -> API)
 ```
 
-> ⚠️ **JANGAN** commit `.env` — sudah diabaikan oleh `.gitignore`.
 
 ## Cara Pakai
 
@@ -156,6 +155,4 @@ Letakkan folder `dags/` ke instalasi Airflow Anda. DAG yang tersedia:
 | `status_reason` | text | Alasan status |
 | `last_checked` | timestamptz | Waktu terakhir dicek |
 
-## Lisensi
 
-Lihat file LICENSE (jika ada) — proyek internal / privat.# job_scrapper
