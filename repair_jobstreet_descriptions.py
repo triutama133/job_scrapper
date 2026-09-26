@@ -71,7 +71,8 @@ def count_corrupted_jobs(data, auto_clean_inactive=True):
     return corrupted_indices
 
 def repair_descriptions(filepath="jobs_data.json", limit=50, save_interval=10, 
-                        delay_min=2.0, delay_max=4.0, headless=True, auto_pause_dag=None, reverse=False):
+                        delay_min=2.0, delay_max=4.0, headless=True, auto_pause_dag=None, 
+                        reverse=False, sync_supabase=False):
     if not os.path.exists(filepath):
         print(f"Error: {filepath} tidak ditemukan.")
         return
@@ -232,6 +233,16 @@ def repair_descriptions(filepath="jobs_data.json", limit=50, save_interval=10,
     print(f"Sisa data corrupt : {final_remaining}")
     print("=" * 60)
 
+    # Sinkronisasi ke Supabase jika diminta
+    if sync_supabase and (repaired_count > 0 or expired_count > 0):
+        print("\n[Supabase] Mengunggah hasil perbaikan batch ini langsung ke Supabase...")
+        try:
+            from upload_to_supabase import upload_jobs_to_supabase
+            batch_jobs = [data[i] for i in batch_indices]
+            upload_jobs_to_supabase(records_to_upload=batch_jobs)
+        except Exception as se:
+            print(f"[Supabase] Gagal mengunggah ke Supabase: {se}")
+
     # Jika semua data sampah sudah habis, otomatis matikan DAG scheduler
     if final_remaining == 0:
         print("\n🎉 [ALL DONE] Semua data lowongan Jobstreet telah 100% diperbaiki!")
@@ -249,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--delay-max", type=float, default=4.0, help="Maksimum jeda detik antar URL (default: 4.0s)")
     parser.add_argument("--auto-pause-dag", type=str, default=None, help="Nama DAG Airflow yang otomatis di-PAUSE jika semua data selesai")
     parser.add_argument("--reverse", action="store_true", default=False, help="Prioritaskan lowongan terbaru terlebih dahulu")
+    parser.add_argument("--sync-supabase", action="store_true", default=False, help="Otomatis upload data yang diperbaiki ke Supabase")
     args = parser.parse_args()
 
     repair_descriptions(
@@ -258,5 +270,6 @@ if __name__ == "__main__":
         delay_min=args.delay_min,
         delay_max=args.delay_max,
         auto_pause_dag=args.auto_pause_dag,
-        reverse=args.reverse
+        reverse=args.reverse,
+        sync_supabase=args.sync_supabase
     )
