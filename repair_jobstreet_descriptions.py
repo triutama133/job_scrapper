@@ -71,7 +71,7 @@ def count_corrupted_jobs(data, auto_clean_inactive=True):
     return corrupted_indices
 
 def repair_descriptions(filepath="jobs_data.json", limit=50, save_interval=10, 
-                        delay_min=2.0, delay_max=4.0, headless=True, auto_pause_dag=None):
+                        delay_min=2.0, delay_max=4.0, headless=True, auto_pause_dag=None, reverse=False):
     if not os.path.exists(filepath):
         print(f"Error: {filepath} tidak ditemukan.")
         return
@@ -105,8 +105,10 @@ def repair_descriptions(filepath="jobs_data.json", limit=50, save_interval=10,
         return
 
     # Batasi batch untuk menjaga keamanan dari blocking IP
-    batch_indices = to_repair[:limit] if limit and limit > 0 else to_repair
-    print(f"Batch kali ini akan memproses {len(batch_indices)} lowongan...")
+    ordered_indices = list(reversed(to_repair)) if reverse else to_repair
+    batch_indices = ordered_indices[:limit] if limit and limit > 0 else ordered_indices
+    order_label = "(memprioritaskan lowongan terbaru)" if reverse else "(dari lowongan terlama)"
+    print(f"Batch kali ini akan memproses {len(batch_indices)} lowongan {order_label}...")
 
     scraper_helper = JobScraper(headless=headless, filepath=filepath)
     repaired_count = 0
@@ -246,6 +248,7 @@ if __name__ == "__main__":
     parser.add_argument("--delay-min", type=float, default=2.0, help="Minimum jeda detik antar URL (default: 2.0s)")
     parser.add_argument("--delay-max", type=float, default=4.0, help="Maksimum jeda detik antar URL (default: 4.0s)")
     parser.add_argument("--auto-pause-dag", type=str, default=None, help="Nama DAG Airflow yang otomatis di-PAUSE jika semua data selesai")
+    parser.add_argument("--reverse", action="store_true", default=False, help="Prioritaskan lowongan terbaru terlebih dahulu")
     args = parser.parse_args()
 
     repair_descriptions(
@@ -254,5 +257,6 @@ if __name__ == "__main__":
         save_interval=args.interval,
         delay_min=args.delay_min,
         delay_max=args.delay_max,
-        auto_pause_dag=args.auto_pause_dag
+        auto_pause_dag=args.auto_pause_dag,
+        reverse=args.reverse
     )

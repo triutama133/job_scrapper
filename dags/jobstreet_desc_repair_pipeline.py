@@ -44,6 +44,7 @@ with DAG(
             f"--batch-size 50 "
             f"--delay-min 2.0 "
             f"--delay-max 4.0 "
+            f"--reverse "
             f"--auto-pause-dag {DAG_ID}"
         ),
         execution_timeout=timedelta(minutes=30),
