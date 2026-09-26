@@ -25,7 +25,9 @@ CLOSED_KEYWORDS = [
     "halaman tidak ditemukan",
     "page not found",
     "this role is closed",
-    "no longer accepting responses"
+    "no longer accepting responses",
+    "tidak lagi diiklankan",
+    "lowongan kerja ini tidak lagi diiklankan"
 ]
 
 def check_link(job):
@@ -70,6 +72,11 @@ def check_link(job):
             # LinkedIn redirects closed jobs to general search if they are expired
             if "/jobs/search" in final_url or "/jobs/collections" in final_url:
                 return job, False, "Redirected to Search Page (Closed)"
+                
+        elif platform == "jobstreet":
+            # Jobstreet indicates closed/expired ads via expiredJobPage container or specific text
+            if "expiredjobpage" in html_content or "tidak lagi diiklankan" in html_content:
+                return job, False, "Jobstreet: Lowongan kerja ini tidak lagi diiklankan"
                 
         # 3. Check HTML Content Keywords
         # Look for indicators of closed applications

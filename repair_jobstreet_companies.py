@@ -3,7 +3,7 @@ import json
 import re
 import time
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from camoufox.sync_api import Camoufox
 
 def repair_companies(filepath="jobs_data.json"):
     print(f"Loading {filepath}...")
@@ -26,25 +26,11 @@ def repair_companies(filepath="jobs_data.json"):
         print("Tidak ada data yang perlu diperbaiki.")
         return
 
-    # Batasi ke 30 pertama terlebih dahulu atau jalankan semuanya jika memungkinkan secara aman
-    # Kita jalankan semuanya secara bertahap
     repaired_count = 0
     
-    print("Memulai Playwright browser...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            locale="id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
-        )
-        page = context.new_page()
-        
-        # Menerapkan stealth jika tersedia
-        try:
-            from playwright_stealth import Stealth
-            Stealth().apply_stealth_sync(page)
-        except ImportError:
-            pass
+    print("Memulai Camoufox stealth browser...")
+    with Camoufox(headless=True) as browser:
+        page = browser.new_page()
 
         for count, (idx, title, url, old_company) in enumerate(to_repair):
             print(f"\n[{count+1}/{len(to_repair)}] Memperbaiki: '{title}' (URL: {url})")
@@ -93,8 +79,6 @@ def repair_companies(filepath="jobs_data.json"):
                 print(f"-> Error saat memproses URL {url}: {ex}")
                 # Jeda sejenak sebelum mencoba berikutnya
                 time.sleep(2)
-                
-        browser.close()
 
     # Simpan hasil akhir
     with open(filepath, 'w', encoding='utf-8') as f:
