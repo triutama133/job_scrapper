@@ -69,19 +69,19 @@ def run_spark_transformation(filepath="jobs_data.json"):
         df = df.withColumn("requirements_count", size(col("requirements"))) \
                .withColumn("responsibilities_count", size(col("job_desk")))
                
-        # Categorization logic using when().otherwise() based on job_title keywords
+        # Categorization logic using when().otherwise() based on job_title keywords with word boundaries
         title_lower = lower(col("job_title"))
         df = df.withColumn(
             "category",
-            when(title_lower.rlike(r"data analyst|data science|data scientist|data engineer|analytics|machine learning|ml|ai|artificial intelligence|database|db|statistics|tableau|bi developer|power bi|pyspark|hadoop|data entry"), "Data & Analytics")
-            .when(title_lower.rlike(r"software|developer|engineer|programmer|backend|frontend|fullstack|devops|sysadmin|network|cyber|cloud|it support|helpdesk|web|android|ios|mobile|php|java|python|react|node|system|coder|embedded"), "Technology & Software")
-            .when(title_lower.rlike(r"design|graphic|creative|ui|ux|art|illustrator|designer|multimedia|animator|video editor|videographer|photographer|interior|copywriter|writer|draftsperson|creative director"), "Design & Creative")
-            .when(title_lower.rlike(r"hr|recruitment|recruiter|human resource|human resources|talent acquisition|people ops|people operations|learning and development|l&d|hrbp|hrga|talent partner"), "Human Resources")
-            .when(title_lower.rlike(r"finance|accounting|accountant|tax|audit|treasury|controller|billing|payroll|bookkeeper|underwriter|pricing|bank|banking|credit|loan|financial|auditor|investment"), "Finance & Accounting")
-            .when(title_lower.rlike(r"marketing|sales|account executive|seo|sem|growth|ads|promotions|branding|content creator|social media|relations|public relation|pr|telemarketing|campaign|customer relations|salesperson|agent|partnership|business development"), "Marketing & Sales")
-            .when(title_lower.rlike(r"doctor|nurse|medical|health|pharmacist|clinical|healthcare|physiotherapist|dentist|veterinarian"), "Healthcare & Medical")
-            .when(title_lower.rlike(r"teacher|tutor|lecturer|pendidik|guru|dosen|instructor|academic|education|pengajar"), "Education & Teaching")
-            .when(title_lower.rlike(r"operations|admin|administration|secretary|customer service|cs|support|helper|clerk|executive assistant|assistant|logistics|supply chain|project manager|pm|officer|manager|head|spv|supervisor|coordination|coordinator|chief|director"), "Operations & Admin")
+            when(title_lower.rlike(r"\b(data\s+analyst|data\s+science|data\s+scientist|data\s+engineer|analytics?|machine\s+learning|ai|artificial\s+intelligence|database|tableau|bi\s+developer|power\s*bi|pyspark|hadoop|data\s+entry|analis\s+data|entry\s+data|pengolahan\s+data)\b|\b(ml|db)\b"), "Data & Analytics")
+            .when(title_lower.rlike(r"\b(software|developer|programmer|backend|frontend|full\s*stack|devops|sysadmin|network\w*|cyber\w*|cloud|helpdesk|android|ios|mobile|php|java\w*|python|react|node|system\w*|coder|embedded|product\s+owner|scrum\s+master|sistem\s+analis|systems\s+analyst|it\s+support|it\s+staff|staff\s+it|it\s+development|it\s+project|it\s+product|it\s+monitoring)\b"), "Technology & Software")
+            .when(title_lower.rlike(r"\b(design\w*|desain\w*|graphic\w*|creative|ui|ux|illustrator|multimedia|animator|video\s+editor|videographer|photographer|interior|copywriter|writer|draftsperson|creative\s+director|seni|art)\b"), "Design & Creative")
+            .when(title_lower.rlike(r"\b(recruitment|recruiter|human\s+resources?|talent\s+acquisition|people\s+ops|people\s+operations|learning\s+and\s+development|hrbp|hrga|talent\s+partner|sumber\s+daya\s+manusia|sdm|personalia|personal|human\s+capital)\b|\b(hr|hc|l&d)\b"), "Human Resources")
+            .when(title_lower.rlike(r"\b(finance|accounting?|accountant|tax\w*|audit\w*|treasury|controller|billing|payroll|bookkeeper|underwriter|pricing|bank\w*|credit|loan|financial|investment|keuangan|akuntansi|akuntan|pajak|kasir|cashier|payable\w*|receivable\w*|ledger\w*|cost\s+control)\b"), "Finance & Accounting")
+            .when(title_lower.rlike(r"\b(marketing|sales\w*|sell\w*|account\s+executive|seo|sem|growth|ads?|brand\w*|advert\w*|promotions?|branding|content\s+creator|social\s+media|public\s+relations?|telemarketing|campaign|customer\s+relations|partnership|business\s+development|pemasaran|penjualan|humas|hubungan\s+masyarakat|kol)\b|\b(pr)\b"), "Marketing & Sales")
+            .when(title_lower.rlike(r"\b(doctor|nurse|medical|health\w*|pharmacist|clinical|healthcare|physiotherapist|dentist|veterinarian)\b"), "Healthcare & Medical")
+            .when(title_lower.rlike(r"\b(teacher|tutor|lecturer|pendidik|guru|dosen|instructor|academic|education|pengajar)\b"), "Education & Teaching")
+            .when(title_lower.rlike(r"\b(operations?|admin\w*|secretary|customer\s+service|support|helper|clerk|assistant|logistics|supply\s+chain|project\s+manager|pm|officer|manager|head|spv|supervisor|coordination?|coordinator|chief|director|customer\s+success|customer\s+experience|customer\s+relation\w*|layanan\s+pelanggan|sekretaris|logistik|operasional|general\s+affairs?|ga|document\s+control|front\s*liner?|front\s*desk)\b|\b(cs|pm)\b"), "Operations & Admin")
             .otherwise("Others / General")
         )
                

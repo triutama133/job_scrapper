@@ -115,29 +115,29 @@ def upload_jobs_to_supabase(filepath="jobs_data.json", records_to_upload=None, r
                 print(f"Gagal mengunggah batch {i // batch_size + 1}: {e}")
                 return False
     else:
-        # Mode Fallback: Ambil URL yang sudah ada di Supabase untuk memisahkan data baru vs data lama
-        print("Mengambil daftar job_url yang sudah ada di Supabase...")
-        existing_urls = set()
+        # Mode Fallback: Ambil URL & ID yang sudah ada di Supabase untuk memisahkan data baru vs data lama
+        print("Mengambil pemetaan job_url & id yang sudah ada di Supabase...")
+        url_to_id = {}
         page_size = 1000
         for offset in range(0, 100000, page_size):
-            res = supabase.table("jobs").select("job_url").range(offset, offset + page_size - 1).execute()
+            res = supabase.table("jobs").select("id, job_url").range(offset, offset + page_size - 1).execute()
             if not res.data:
                 break
             for r in res.data:
                 u = r.get("job_url")
                 if u:
-                    existing_urls.add(u)
+                    url_to_id[u] = r.get("id")
             if len(res.data) < page_size:
                 break
-        print(f"Total URL terdaftar di Supabase: {len(existing_urls)}")
+        print(f"Total URL terdaftar di Supabase: {len(url_to_id)}")
 
-        new_records = [r for r in records if r.get("job_url") not in existing_urls]
-        existing_records = [r for r in records if r.get("job_url") in existing_urls]
+        new_records = [r for r in records if r.get("job_url") not in url_to_id]
+        existing_records = [r for r in records if r.get("job_url") in url_to_id]
 
         print(f"Lowongan BARU yang akan di-insert : {len(new_records)}")
         print(f"Lowongan SUDAH ADA di database     : {len(existing_records)}")
 
-        # 1. Insert data baru
+        # 1. Insert data baru dalam batch
         if new_records:
             print(f"Mengunggah {len(new_records)} lowongan baru...")
             for i in range(0, len(new_records), batch_size):
@@ -150,28 +150,24 @@ def upload_jobs_to_supabase(filepath="jobs_data.json", records_to_upload=None, r
                     print(f"Gagal insert batch {i // batch_size + 1}: {ie}")
                     return False
 
-        # 2. Update data lama jika mode repaired_only atau sync spesifik
+        # 2. Update data lama jika mode repaired_only atau sync spesifik menggunakan batch upsert pada primary key 'id'
         if repaired_only and existing_records:
-            print(f"Memperbarui {len(existing_records)} lowongan yang diperbaiki di Supabase...")
-            updated_count = 0
+            print(f"Memperbarui {len(existing_records)} lowongan di Supabase via batch upsert (on_conflict='id')...")
+            records_with_id = []
             for r in existing_records:
+                rec_copy = dict(r)
+                rec_copy["id"] = url_to_id[r["job_url"]]
+                records_with_id.append(rec_copy)
+
+            for i in range(0, len(records_with_id), batch_size):
+                batch = records_with_id[i:i + batch_size]
                 try:
-                    update_data = {
-                        "job_title": r["job_title"],
-                        "company": r["company"],
-                        "description": r["description"],
-                        "job_desk": r["job_desk"],
-                        "requirements": r["requirements"],
-                        "is_active": r["is_active"],
-                        "status_reason": r["status_reason"],
-                        "salary": r["salary"]
-                    }
-                    supabase.table("jobs").update(update_data).eq("job_url", r["job_url"]).execute()
-                    updated_count += 1
+                    supabase.table("jobs").upsert(batch, on_conflict="id").execute()
+                    success_count += len(batch)
+                    print(f"Berhasil update batch {i // batch_size + 1}: {len(batch)} lowongan.")
                 except Exception as ue:
-                    print(f"Gagal update {r['job_url']}: {ue}")
-            print(f"Berhasil update {updated_count}/{len(existing_records)} lowongan di Supabase.")
-            success_count += updated_count
+                    print(f"Gagal update batch {i // batch_size + 1}: {ue}")
+                    return False
             
     print(f"\nETL Selesai. Total lowongan berhasil diproses ke Supabase: {success_count}/{len(records)}")
     return True
