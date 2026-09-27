@@ -86,30 +86,108 @@ def upload_jobs_to_supabase(filepath="jobs_data.json", records_to_upload=None, r
     
     # Chunk uploading into batches to prevent payload limits
     success_count = 0
-    
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i + batch_size]
-        try:
-            # PostgREST upsert with resolution key on_conflict="job_url"
-            response = supabase.table("jobs").upsert(batch, on_conflict="job_url").execute()
-            success_count += len(batch)
-            print(f"Berhasil mengunggah batch {i // batch_size + 1}: {len(batch)} lowongan.")
-        except Exception as e:
-            print(f"Gagal mengunggah batch {i // batch_size + 1}: {e}")
+    use_fallback = False
+
+    # Tes batch pertama menggunakan PostgREST native upsert
+    first_batch = records[:batch_size]
+    try:
+        supabase.table("jobs").upsert(first_batch, on_conflict="job_url").execute()
+        success_count += len(first_batch)
+        print(f"Berhasil mengunggah batch 1 (native upsert): {len(first_batch)} lowongan.")
+    except Exception as e:
+        err_msg = str(e)
+        if "42P10" in err_msg or "ON CONFLICT" in err_msg or "unique or exclusion constraint" in err_msg:
+            print("\n[INFO] Tabel 'jobs' di Supabase belum memiliki UNIQUE constraint pada kolom 'job_url'.")
+            print("[INFO] Mengaktifkan mode sinkronisasi cerdas (Insert New + Update Existing)...")
+            use_fallback = True
+        else:
+            print(f"Gagal mengunggah batch 1: {e}")
             return False
+
+    if not use_fallback:
+        for i in range(batch_size, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            try:
+                supabase.table("jobs").upsert(batch, on_conflict="job_url").execute()
+                success_count += len(batch)
+                print(f"Berhasil mengunggah batch {i // batch_size + 1}: {len(batch)} lowongan.")
+            except Exception as e:
+                print(f"Gagal mengunggah batch {i // batch_size + 1}: {e}")
+                return False
+    else:
+        # Mode Fallback: Ambil URL yang sudah ada di Supabase untuk memisahkan data baru vs data lama
+        print("Mengambil daftar job_url yang sudah ada di Supabase...")
+        existing_urls = set()
+        page_size = 1000
+        for offset in range(0, 100000, page_size):
+            res = supabase.table("jobs").select("job_url").range(offset, offset + page_size - 1).execute()
+            if not res.data:
+                break
+            for r in res.data:
+                u = r.get("job_url")
+                if u:
+                    existing_urls.add(u)
+            if len(res.data) < page_size:
+                break
+        print(f"Total URL terdaftar di Supabase: {len(existing_urls)}")
+
+        new_records = [r for r in records if r.get("job_url") not in existing_urls]
+        existing_records = [r for r in records if r.get("job_url") in existing_urls]
+
+        print(f"Lowongan BARU yang akan di-insert : {len(new_records)}")
+        print(f"Lowongan SUDAH ADA di database     : {len(existing_records)}")
+
+        # 1. Insert data baru
+        if new_records:
+            print(f"Mengunggah {len(new_records)} lowongan baru...")
+            for i in range(0, len(new_records), batch_size):
+                batch = new_records[i:i + batch_size]
+                try:
+                    supabase.table("jobs").insert(batch).execute()
+                    success_count += len(batch)
+                    print(f"Berhasil insert batch {i // batch_size + 1}: {len(batch)} lowongan baru.")
+                except Exception as ie:
+                    print(f"Gagal insert batch {i // batch_size + 1}: {ie}")
+                    return False
+
+        # 2. Update data lama jika mode repaired_only atau sync spesifik
+        if repaired_only and existing_records:
+            print(f"Memperbarui {len(existing_records)} lowongan yang diperbaiki di Supabase...")
+            updated_count = 0
+            for r in existing_records:
+                try:
+                    update_data = {
+                        "job_title": r["job_title"],
+                        "company": r["company"],
+                        "description": r["description"],
+                        "job_desk": r["job_desk"],
+                        "requirements": r["requirements"],
+                        "is_active": r["is_active"],
+                        "status_reason": r["status_reason"],
+                        "salary": r["salary"]
+                    }
+                    supabase.table("jobs").update(update_data).eq("job_url", r["job_url"]).execute()
+                    updated_count += 1
+                except Exception as ue:
+                    print(f"Gagal update {r['job_url']}: {ue}")
+            print(f"Berhasil update {updated_count}/{len(existing_records)} lowongan di Supabase.")
+            success_count += updated_count
             
-    print(f"\nETL Selesai. Total lowongan berhasil di-upsert ke Supabase: {success_count}/{len(records)}")
+    print(f"\nETL Selesai. Total lowongan berhasil diproses ke Supabase: {success_count}/{len(records)}")
     return True
 
 if __name__ == "__main__":
+    import sys
     parser = argparse.ArgumentParser(description="Upload atau update lowongan kerja ke database Supabase.")
     parser.add_argument("--file", type=str, default="jobs_data.json", help="Path ke file jobs_data.json")
     parser.add_argument("--repaired-only", action="store_true", help="Hanya upload data Jobstreet yang sudah bersih/diperbaiki")
     parser.add_argument("--batch-size", type=int, default=100, help="Ukuran batch upsert (default: 100)")
     args = parser.parse_args()
 
-    upload_jobs_to_supabase(
+    success = upload_jobs_to_supabase(
         filepath=args.file,
         repaired_only=args.repaired_only,
         batch_size=args.batch_size
     )
+    if not success:
+        sys.exit(1)
