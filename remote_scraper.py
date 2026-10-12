@@ -584,7 +584,7 @@ class RemoteJobScraper(JobScraper):
                     sources=None, upwork_rss=None, upwork_file=None):
         """Menjalankan seluruh atau sebagian sumber remote job scraper."""
         all_sources = ["remotive", "weworkremotely", "remoteok", "himalayas",
-                       "jobicy", "arbeitnow", "linkedin", "upwork"]
+                       "jobicy", "arbeitnow", "linkedin"]
         selected = [s.strip().lower() for s in sources.split(",")] if sources else all_sources
 
         print("=" * 70)
