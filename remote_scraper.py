@@ -481,9 +481,39 @@ class RemoteJobScraper(JobScraper):
 
         xml_content = None
         if file_path and os.path.exists(file_path):
-            print(f"  Membaca Upwork feed dari file lokal: {file_path}")
-            with open(file_path, "r", encoding="utf-8") as f:
-                xml_content = f.read().encode("utf-8")
+            print(f"  Membaca file data Upwork: {file_path}")
+            if file_path.endswith(".json"):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        items = json.load(f)
+                    count = 0
+                    for item in items[:limit]:
+                        title = item.get("title")
+                        url = item.get("url")
+                        desc = item.get("description", "")
+                        salary = item.get("budget") or item.get("salary")
+                        skills = item.get("skills", [])
+                        if title and url:
+                            before = len(self.seen_urls)
+                            self.add_remote_job(
+                                title=title,
+                                company="Upwork Client",
+                                platform="Upwork",
+                                url=url,
+                                description=desc,
+                                skills=skills if skills else None,
+                                salary=salary
+                            )
+                            if len(self.seen_urls) > before:
+                                count += 1
+                    print(f"-> Upwork: Berhasil memproses {count} proyek dari {file_path}.")
+                    return count
+                except Exception as je:
+                    print(f"  [Upwork] Error membaca file JSON: {je}")
+                    return 0
+            else:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    xml_content = f.read().encode("utf-8")
         elif feed_url:
             print(f"  Mengunduh Upwork feed dari RSS URL terotentikasi...")
             xml_content = self._http_get(feed_url)
