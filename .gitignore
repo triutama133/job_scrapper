@@ -24,6 +24,7 @@ jobs_data.json.*
 *.json.bak*
 *.json.tmp
 salary_refetch_progress.json
+upwork_session/
 
 # Screenshot debug
 *.png
