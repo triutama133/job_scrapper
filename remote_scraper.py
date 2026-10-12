@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import re
 import argparse
 import urllib.request
@@ -462,7 +463,7 @@ class RemoteJobScraper(JobScraper):
                     )
                     if len(self.seen_urls) > before:
                         count += 1
-                        time.sleep(0.5)  # Jeda sopan antar detail page
+                        time.sleep(random.uniform(2.5, 4.5))  # Jeda aman & acak antar request untuk hindari rate-limit LinkedIn
 
                 start += 25
             except Exception as e:

@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import re
 import argparse
 from bs4 import BeautifulSoup
@@ -472,7 +473,7 @@ class GlintsScraper(JobScraper):
             for link in links:
                 try:
                     page.goto(link, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(int(random.uniform(2000, 3500)))
                     
                     job_soup = BeautifulSoup(page.content(), 'html.parser')
                     
@@ -594,7 +595,7 @@ class KalibrrScraper(JobScraper):
                             continue
                             
                     page.goto(link, wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(int(random.uniform(2000, 3500)))
                     job_soup = BeautifulSoup(page.content(), 'html.parser')
                     title_elem = job_soup.find('h1')
                     title = title_elem.text.strip() if title_elem else "Unknown Title"
@@ -668,7 +669,7 @@ class JobstreetScraper(JobScraper):
                 try:
                     normalized_link = link.split('?')[0]
                     page.goto(normalized_link, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(int(random.uniform(2500, 4500)))
                     
                     job_soup = BeautifulSoup(page.content(), 'html.parser')
                     
@@ -828,7 +829,7 @@ class LinkedInScraper(JobScraper):
                                 continue
                     
                     page.goto(link, wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(int(random.uniform(2500, 4500)))
                     
                     job_soup = BeautifulSoup(page.content(), 'html.parser')
                     title_elem = job_soup.find(class_=re.compile(r'topcard__title|top-card-layout__title|h1', re.I)) or job_soup.find('h1')
