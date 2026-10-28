@@ -27,7 +27,7 @@ with DAG(
         'memperbaiki lowongan boilerplate "Bergabunglah..." dengan Camoufox stealth browser. '
         'Berjalan tiap 2 jam (50 lowongan/batch) & otomatis PAUSE saat data sampah habis.'
     ),
-    schedule_interval='0 */2 * * *',  # Setiap 2 jam sekali
+    schedule_interval='40 */2 * * *',  # Setiap 2 jam sekali
     catchup=False,
     tags=['scraping', 'jobstreet', 'repair', 'camoufox', 'etl'],
 ) as dag:

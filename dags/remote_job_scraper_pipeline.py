@@ -14,6 +14,9 @@ default_args = {
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 2,
+    # SequentialExecutor menjalankan 1 task sekali: scraper didahulukan dari salary refetch/repair bila antre
+    'priority_weight': 10,
+    'weight_rule': 'absolute',
     'retry_delay': timedelta(minutes=5),
 }
 
@@ -21,7 +24,8 @@ with DAG(
     dag_id=DAG_ID,
     default_args=default_args,
     description='Automated Global Remote Data Engineering Jobs & Upwork Gigs Scraper with Supabase ETL',
-    schedule_interval='0 */6 * * *',  # Every 6 hours
+    schedule_interval='30 */6 * * *',  # Every 6 hours
+    max_active_runs=1,
     catchup=False,
     tags=['scraping', 'remote', 'data_engineering', 'upwork', 'etl'],
 ) as dag:
@@ -32,8 +36,7 @@ with DAG(
         bash_command=(
             f"cd {PROJECT_PATH} && source ../venv/bin/activate && "
             f"python -u remote_scraper.py "
-            f"--keyword 'data engineer' "
-            f"--limit 25 "
+            f"--limit 25 --data-limit 200 "
             f"--upload-supabase"
         ),
         execution_timeout=timedelta(minutes=30),
@@ -53,4 +56,13 @@ with DAG(
         execution_timeout=timedelta(minutes=15),
     )
 
-    scrape_remote >> transform_spark >> upload_supabase
+
+    # Gerbang kualitas data: gagal bila ada salary placeholder berulang, salary 0, duplikat, atau Supabase tidak sinkron
+    data_quality = BashOperator(
+        task_id='data_quality_check',
+        bash_command=f"cd {PROJECT_PATH} && source ../venv/bin/activate && python -u data_quality_check.py",
+        execution_timeout=timedelta(minutes=10),
+        retries=0,
+    )
+
+    scrape_remote >> transform_spark >> upload_supabase >> data_quality

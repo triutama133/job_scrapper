@@ -5,12 +5,16 @@ Automated job scraping pipeline for Indonesian job portals (Glints, Kalibrr, Job
 ## Fitur Utama
 
 - **Multi-platform scraping**: Glints, Kalibrr, Jobstreet, LinkedIn
+- **Remote job scraper** (`remote_scraper.py` + `remote_sources.py`): 14 sumber diambil paralel dengan retry/backoff, filter relevansi data/ETL, dedup lintas sumber (URL + company/title), satu kali tulis ke JSON, ringkasan per sumber, exit code 1 bila semua sumber gagal.
+  Sumber: Remotive, WeWorkRemotely, RemoteOK, Himalayas, Jobicy, Arbeitnow, WorkingNomads, TheMuse, HackerNews (Who is hiring), Greenhouse/Lever/Ashby company boards, LinkedIn Remote, Upwork.
+  Tambah perusahaan sendiri: `--boards-file boards.json` -> `{"greenhouse": ["slug"], "lever": [], "ashby": []}`.
 - **Salary extraction**: 
   - Langsung dari elemen halaman portal (mis. `data-automation="job-detail-salary"` untuk Jobstreet)
   - Sumber berbasis schema: microdata (`itemprop="baseSalary"`) & JSON-LD (`baseSalary`) dengan formatter rapi (`IDR 2.500.000 - 3.500.000 per month`)
   - Fallback heuristik regex dari deskripsi untuk lowongan lama
   - Mendukung `Rp`, `Rp.`, `IDR`, `SGD`, `USD`, `EUR`, `AUD`, `$` + rentang gaji + satuan `juta/jt`
 - **Anti fused-salary**: heuristik melewati elemen hidden/parent `baseSalary` dan menolak deret digit panjang (mencegah angka saling nempel seperti `IDR230000033000002300000`)
+- **Kebijakan salary**: lowongan BARU memakai salary langsung dari scraper (API/feed/skema/rentang di deskripsi) dan diberi penanda `scraped_at`. `salary_refetch.py` hanya untuk data LAMA tanpa salary; setelah semuanya diproses ia menulis `salary_refetch_complete.flag`, run berikutnya langsung berhenti, dan DAG-nya mem-pause dirinya sendiri. Sumber remote tidak pernah memakai salary dari halaman (menghasilkan nilai palsu). `data_quality_check.py` berjalan di akhir tiap DAG (salary placeholder berulang, salary 0, duplikat, sinkron Supabase).
 - **Incremental salary refetch** (`salary_refetch.py`):
   - Scrap ulang salary lowongan existing dari halaman yang masih aktif
   - Rate-limit per platform agar tidak kena block IP
