@@ -496,50 +496,39 @@ class GlintsScraper(JobScraper):
             self.remote_only = location.lower() != HOME_REGION.lower()
             
             scraped_links = set()
-            page_num = 1
-            max_pages = 4 # Deep pagination search (up to 4 pages)
-            
-            while len(scraped_links) < max_jobs and page_num <= max_pages:
-                url = f"https://glints.com/{cc}/opportunities/jobs/explore?keyword={q_keyword}&locationName={q_location}"
+            # Tanpa login Glints hanya memberi halaman 1 (30 hasil; halaman 2+ -> "please login"). Agar tidak terus
+            # mendapat 30 lowongan teratas yang sama, ambil dua himpunan berbeda per keyword: terbaru dulu, lalu peringkat default.
+            for sort_param in ("&sortBy=LATEST", ""):
+                if len(scraped_links) >= max_jobs:
+                    break
+                base_url = f"https://glints.com/{cc}/opportunities/jobs/explore?keyword={q_keyword}&locationName={q_location}"
                 if self.remote_only:
-                    url = f"https://glints.com/{cc}/opportunities/jobs/explore?keyword={q_keyword}&country={cc.upper()}&workArrangementOptions=REMOTE"
-                if page_num > 1:
-                    url += f"&page={page_num}"
-                    
-                print(f"Loading Glints search page {page_num}...")
+                    base_url = f"https://glints.com/{cc}/opportunities/jobs/explore?keyword={q_keyword}&country={cc.upper()}&workArrangementOptions=REMOTE"
+                url = base_url + sort_param
+                label = "terbaru" if sort_param else "default"
+                print(f"Loading Glints search ({label})...")
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
                     page.wait_for_timeout(3000)
-                    
+
                     for _ in range(3):
                         page.evaluate("window.scrollBy(0, window.innerHeight)")
                         page.wait_for_timeout(1000)
-                        
-                    content = page.content()
-                    soup = BeautifulSoup(content, 'html.parser')
-                    
-                    current_links = []
+
+                    soup = BeautifulSoup(page.content(), 'html.parser')
+
+                    page_links = set()
                     for a in soup.find_all('a', href=True):
-                        href = a['href']
-                        if "/opportunities/jobs/" in href:
-                            if not href.startswith("http"):
-                                href = "https://glints.com" + href
-                            clean_href = href.split('?')[0]
-                            if clean_href not in self.seen_urls:
-                                current_links.append(clean_href)
-                                
-                    new_links = set(current_links) - scraped_links
-                    if not new_links:
-                        print("No new jobs found on this page. Stopping pagination.")
-                        break
-                        
+                        clean_href = a['href'].split('?')[0]
+                        if re.search(r"/opportunities/jobs/[^/]+/[0-9a-f]{8}-[0-9a-f-]{27}$", clean_href):
+                            page_links.add(clean_href if clean_href.startswith("http") else "https://glints.com" + clean_href)
+
+                    new_links = {l for l in page_links if l not in self.seen_urls} - scraped_links
                     scraped_links.update(new_links)
-                    print(f"Glints: Gathered {len(scraped_links)} / {max_jobs} links so far...")
-                    page_num += 1
+                    print(f"Glints ({label}): {len(page_links)} lowongan, {len(new_links)} belum pernah diambil; terkumpul {len(scraped_links)} / {max_jobs}")
                 except Exception as pe:
-                    print(f"Glints page {page_num} loading error: {pe}")
-                    break
-            
+                    print(f"Glints search ({label}) loading error: {pe}")
+
             links = list(scraped_links)[:max_jobs]
             print(f"Found {len(links)} Glints job links to scrape.")
             
@@ -581,6 +570,7 @@ class GlintsScraper(JobScraper):
 
 class KalibrrScraper(JobScraper):
     uses_browser = False
+    keyword_delay = (1, 3)  # ~75 keyword beruntun ke API: beri jeda sopan
     """Kalibrr lewat JSON API internal (tanpa browser): lebih cepat & tidak bergantung selector HTML.
     Halaman /job-board?q= lama sudah di-redirect ke homepage sehingga scraper HTML menghasilkan 0 lowongan."""
 
@@ -605,12 +595,18 @@ class KalibrrScraper(JobScraper):
                 params["text"] = keyword
             if self.remote_only:
                 params["is_work_from_home"] = "true"
-            try:
-                res = requests.get(self.API, params=params, headers=headers, timeout=20)
-                res.raise_for_status()
-                jobs = res.json().get("jobs", [])
-            except Exception as e:
-                print(f"Kalibrr API error (offset {offset}): {e}")
+            jobs, err = [], None
+            for attempt in range(3):  # 5xx sesaat itu wajar; coba lagi dengan jeda sebelum menyerah
+                try:
+                    res = requests.get(self.API, params=params, headers=headers, timeout=20)
+                    res.raise_for_status()
+                    jobs, err = res.json().get("jobs", []), None
+                    break
+                except Exception as e:
+                    err = e
+                    time.sleep(2 * (attempt + 1))
+            if err:
+                print(f"Kalibrr API error (offset {offset}): {err}")
                 break
             if not jobs:
                 break
@@ -923,6 +919,68 @@ class LinkedInScraper(JobScraper):
         self.run_playwright(task)
 
 
+# Keyword pencarian untuk region utama (Indonesia = SEMUA lowongan). Portal hanya bisa dicari per keyword, jadi
+# kumpulan ini dibuat mencakup semua kategori taksonomi (Data, Tech, Design, HR, Finance, Marketing, Healthcare,
+# Education, Operations) plus bidang non-kantor yang banyak di portal Indonesia. Data engineering selalu duluan.
+PRIORITY_KEYWORDS = ["Data Engineer", "Data Analyst", "Data Scientist", "Analytics Engineer"]
+KEYWORD_POOL = [
+    # Teknologi
+    "Software Engineer", "Backend Developer", "Frontend Developer", "Mobile Developer", "DevOps Engineer",
+    "QA Engineer", "UI UX Designer", "IT Support", "Network Engineer", "Product Manager", "Business Analyst",
+    # Admin & operasional
+    "Data Entry", "Admin", "Staff Administrasi", "Sekretaris", "Receptionist", "Customer Service",
+    "Project Manager", "Operations Manager", "General Affairs", "Customer Success",
+    # Marketing & sales
+    "Digital Marketing", "Social Media Specialist", "Content Creator", "SEO Specialist", "Brand Manager",
+    "Copywriter", "Sales", "Sales Executive", "Business Development", "Account Executive", "Telemarketing",
+    # Desain & kreatif
+    "Graphic Designer", "Video Editor", "Illustrator", "Photographer",
+    # HR
+    "Human Resources", "Recruiter", "Talent Acquisition", "Payroll",
+    # Keuangan
+    "Accountant", "Finance", "Tax", "Auditor", "Banking Officer", "Credit Analyst",
+    # Logistik & produksi
+    "Logistics", "Supply Chain", "Warehouse", "Purchasing", "Procurement", "Driver", "Production Operator",
+    "Quality Control", "Maintenance Technician", "HSE Officer",
+    # Teknik
+    "Mechanical Engineer", "Civil Engineer", "Electrical Engineer", "Architect",
+    # Kesehatan
+    "Perawat", "Doctor", "Apoteker", "Medical Representative",
+    # Pendidikan
+    "Teacher", "Guru", "Lecturer", "Tutor",
+    # Ritel, F&B, perhotelan
+    "Store Manager", "Kasir", "Barista", "Chef", "Waiter", "Hotel Front Office",
+    # Lainnya
+    "Legal", "Consultant", "Translator", "Content Writer", "Researcher",
+]
+REMOTE_KEYWORDS = ["Data Engineer", "Data Analyst", "Software Engineer"]
+ROTATION_STATE = "scraper_state.json"
+
+
+def rotating_keywords(window, state_file=ROTATION_STATE):
+    """Ambil `window` keyword berikutnya dari KEYWORD_POOL secara bergilir (kursor disimpan di file).
+
+    Platform berbasis browser lambat, jadi tiap run hanya mengerjakan satu jendela; seluruh pool tuntas dalam
+    beberapa run. Kursor maju di awal run sehingga run yang terpotong timeout tidak mengulang jendela yang sama.
+    """
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            cursor = int(json.load(f).get("keyword_cursor", 0))
+    except Exception:
+        cursor = 0
+    n = len(KEYWORD_POOL)
+    cursor %= n
+    picked = [KEYWORD_POOL[(cursor + i) % n] for i in range(min(window, n))]
+    try:
+        tmp = f"{state_file}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"keyword_cursor": (cursor + window) % n}, f)
+        os.replace(tmp, state_file)
+    except Exception as e:
+        print(f"Peringatan: gagal menyimpan kursor keyword ({e}); run berikutnya mengulang jendela yang sama.")
+    return picked
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Job Scraper for Glints, Kalibrr, Jobstreet, and LinkedIn")
     parser.add_argument("--max-jobs", type=int, default=5, help="Maximum number of jobs to scrape per platform")
@@ -932,6 +990,8 @@ if __name__ == "__main__":
     parser.add_argument("--keyword", type=str, default="", help="Keyword to search jobs for (e.g. 'Software Engineer')")
     parser.add_argument("--remote-regions", type=str, default="Singapore,Malaysia,Philippines", help="Region lain (koma dipisah) yang hanya diambil lowongan REMOTE-nya. Negara apa pun didukung LinkedIn (mis. 'United States,United Kingdom,Germany'); Glints/Jobstreet/Kalibrr hanya Asia Tenggara & akan dilewati untuk region lain. Kosongkan untuk menonaktifkan")
     parser.add_argument("--skip-home", action="store_true", help="Lewati region utama (--location); hanya jalankan --remote-regions (untuk dipecah jadi task terpisah)")
+    parser.add_argument("--window", type=int, default=12, help="Jumlah keyword umum bergilir per run untuk platform berbasis browser (Glints/Jobstreet/LinkedIn)")
+    parser.add_argument("--api-per-keyword", type=int, default=30, help="Lowongan baru per keyword untuk platform API (Kalibrr), yang menjalankan SEMUA keyword tiap run")
     args = parser.parse_args()
 
     platform = args.platform.lower()
@@ -952,14 +1012,7 @@ if __name__ == "__main__":
         scrapers.append(LinkedInScraper(headless=args.headless))
 
     remote_regions = [r.strip() for r in args.remote_regions.split(",") if r.strip() and r.strip().lower() != location.lower()]
-    # Data engineering & sejenisnya dulu (prioritas), lalu kategori umum
-    PRIORITY_KEYWORDS = ["Data Engineer", "Data Analyst", "Data Scientist", "Analytics Engineer"]
-    GENERAL_KEYWORDS = [
-        "Software Engineer", "Data Entry", "Digital Marketing", "Graphic Designer",
-        "Project Manager", "Sales", "Human Resources", "Content Creator",
-        "Business Development", "Accountant", "Customer Service", "Social Media Specialist"
-    ]
-    REMOTE_KEYWORDS = ["Data Engineer", "Data Analyst", "Software Engineer"]
+    home_window = [] if (keyword or args.skip_home or not any(sc.uses_browser for sc in scrapers)) else rotating_keywords(args.window)
 
     def run_scrape(scraper, loc, kws, per_kw):
         scraper.remote_only = loc.lower() != HOME_REGION.lower()
@@ -982,9 +1035,14 @@ if __name__ == "__main__":
                 pass
             elif keyword:
                 run_scrape(scraper, location, [keyword], max_jobs)
+            elif not scraper.uses_browser:
+                # Platform API (cepat, tanpa browser): semua keyword tiap run, lebih dalam per keyword
+                kws = PRIORITY_KEYWORDS + KEYWORD_POOL
+                print(f"Tanpa keyword: {len(kws)} keyword (semua), {args.api_per_keyword} lowongan baru per keyword")
+                run_scrape(scraper, location, kws, args.api_per_keyword)
             else:
-                kws = PRIORITY_KEYWORDS + GENERAL_KEYWORDS
-                print(f"Tanpa keyword: {len(PRIORITY_KEYWORDS)} keyword data diprioritaskan + {len(GENERAL_KEYWORDS)} kategori umum")
+                kws = PRIORITY_KEYWORDS + home_window
+                print(f"Tanpa keyword: {len(PRIORITY_KEYWORDS)} keyword data + {len(home_window)} keyword bergilir: {', '.join(home_window)}")
                 run_scrape(scraper, location, kws, max(5, max_jobs // len(kws)))
             for region in remote_regions:
                 kws = [keyword] if keyword else REMOTE_KEYWORDS

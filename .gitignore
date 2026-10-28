@@ -48,3 +48,4 @@ logs/
 .DS_Store
 *.lock
 salary_refetch_complete.flag
+scraper_state.json

@@ -32,7 +32,9 @@ with DAG(
     tags=['portfolio', 'scraping', 'etl'],
 ) as dag:
 
-    # Task 1: Indonesia (semua lowongan; keyword data engineering diprioritaskan)
+    # Task 1: Indonesia (semua lowongan; keyword data engineering diprioritaskan).
+    # Kalibrr (API) menjalankan semua ~83 keyword tiap run; Glints/Jobstreet/LinkedIn (browser) mengerjakan
+    # 4 keyword data + 12 keyword bergilir dari pool 79 keyword (seluruh pool tuntas dalam ~7 run).
     scrape_jobs = BashOperator(
         task_id='scrape_jobs',
         bash_command=f"cd {PROJECT_PATH} && source ../venv/bin/activate && python -u scraper.py --platform all --max-jobs 50 --remote-regions ''",
