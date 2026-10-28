@@ -1,13 +1,30 @@
 import os
 import json
 import time
+import random
 import re
 import argparse
 from bs4 import BeautifulSoup
 from camoufox.sync_api import Camoufox
 
+HOME_REGION = "Indonesia"
+
+# Indonesia = semua lowongan. Region lain = HANYA lowongan remote.
+REGIONS = {
+    "indonesia":   {"jobstreet": "https://www.jobstreet.co.id", "glints": "id", "kalibrr": "Indonesia"},
+    "singapore":   {"jobstreet": "https://www.jobstreet.com.sg", "glints": "sg", "kalibrr": None},
+    "malaysia":    {"jobstreet": "https://www.jobstreet.com.my", "glints": "my", "kalibrr": None},
+    "philippines": {"jobstreet": "https://www.jobstreet.com.ph", "glints": None, "kalibrr": "Philippines"},
+}
+
+REMOTE_RE = re.compile(r"\b(remote(ly)?|work\s*from\s*home|wfh|work\s*from\s*anywhere|fully\s*distributed)\b", re.I)
+
+
 class JobScraper:
+    save_batch = 10  # tulis ke disk tiap N lowongan (bukan tiap lowongan: file 90MB+)
+
     def __init__(self, headless=True, filepath="jobs_data.json"):
+        self.remote_only = False
         self.headless = headless
         self.jobs = []
         self.seen_urls = set()
@@ -26,7 +43,36 @@ class JobScraper:
             except Exception as e:
                 print(f"Error loading existing URLs: {e}")
 
+    _session_page = None
+    uses_browser = True
+    keyword_delay = None  # (min, max) detik jeda antar keyword; dipakai situs yang cepat rate-limit
+
+    def session(self):
+        """Satu browser dipakai ulang untuk semua keyword/region (launch Camoufox ~10-50 detik di Raspberry Pi)."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            if not self.uses_browser:
+                yield self
+                return
+            print("Launching Camoufox stealth browser (sekali untuk seluruh sesi)...")
+            with Camoufox(headless=self.headless) as browser:
+                self._session_page = browser.new_page()
+                try:
+                    yield self
+                finally:
+                    try:
+                        self._session_page.close()
+                    except Exception:
+                        pass
+                    self._session_page = None
+        return _cm()
+
     def run_browser(self, task_func):
+        if self._session_page is not None:
+            task_func(self._session_page)
+            return
         print("Launching Camoufox stealth browser (C++ Fingerprint Spoofing)...")
         with Camoufox(headless=self.headless) as browser:
             page = browser.new_page()
@@ -336,8 +382,14 @@ class JobScraper:
                     return cand
         return None
 
-    def add_job(self, title, company, platform, url, description, job_desk=None, skills=None, salary=None):
+    def looks_remote(self, title, description):
+        return bool(REMOTE_RE.search(title or "") or REMOTE_RE.search((description or "")[:1200]))
+
+    def add_job(self, title, company, platform, url, description, job_desk=None, skills=None, salary=None, is_remote=None):
         if url in self.seen_urls:
+            return
+        # Region non-Indonesia: hanya remote. is_remote dari flag resmi situs bila ada, selain itu deteksi teks.
+        if self.remote_only and not (is_remote or (is_remote is None and self.looks_remote(title, description))):
             return
         
         # Clean description of any dynamic UI junk lines first
@@ -361,17 +413,29 @@ class JobScraper:
             "description": cleaned_desc,
             "job_desk": final_job_desk,
             "requirements": final_skills,
-            "salary": self.clean_salary_text(salary) if salary else None
+            "salary": self.clean_salary_text(salary) if salary else None,
+            # Penanda lowongan BARU: salary diambil langsung oleh scraper; salary_refetch hanya untuk data lama (tanpa penanda)
+            "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         
         self.jobs.append(job_data)
         self.seen_urls.add(url)
         print(f"[{platform}] Scraped: {job_data['job_title']} at {job_data['company']}")
-        self.save_to_json()
+        if len(self.jobs) >= self.save_batch:
+            self.save_to_json()
 
     def save_to_json(self, filepath=None):
         if filepath:
             self.filepath = filepath
+        if not self.jobs:
+            return  # tidak ada yang baru: jangan baca/tulis ulang file besar
+        import fcntl
+        # Kunci antar-proses: scraper portal & remote scraper (DAG berbeda) menulis file yang sama
+        with open(self.filepath + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self._save_locked()
+
+    def _save_locked(self):
         # Load existing jobs to prevent duplicates across runs
         existing_jobs = []
         if os.path.exists(self.filepath):
@@ -398,6 +462,8 @@ class JobScraper:
                 merged_jobs.append(job)
                 existing_urls.add(job["job_url"])
                 
+        # Atomic write to prevent file corruption
+        temp_filepath = self.filepath + ".tmp"
         # Atomic write with unique PID to prevent race conditions between concurrent scrapers
         temp_filepath = f"{self.filepath}.{os.getpid()}_{int(time.time() * 1000)}.tmp"
         try:
@@ -422,13 +488,21 @@ class GlintsScraper(JobScraper):
             import urllib.parse
             q_keyword = urllib.parse.quote(keyword)
             q_location = urllib.parse.quote(location)
+            region = REGIONS.get(location.lower())
+            if not region or not region.get("glints"):
+                print(f"Glints tidak mendukung region '{location}'. Dilewati.")
+                return
+            cc = region["glints"]
+            self.remote_only = location.lower() != HOME_REGION.lower()
             
             scraped_links = set()
             page_num = 1
             max_pages = 4 # Deep pagination search (up to 4 pages)
             
             while len(scraped_links) < max_jobs and page_num <= max_pages:
-                url = f"https://glints.com/id/opportunities/jobs/explore?keyword={q_keyword}&locationName={q_location}"
+                url = f"https://glints.com/{cc}/opportunities/jobs/explore?keyword={q_keyword}&locationName={q_location}"
+                if self.remote_only:
+                    url = f"https://glints.com/{cc}/opportunities/jobs/explore?keyword={q_keyword}&country={cc.upper()}&workArrangementOptions=REMOTE"
                 if page_num > 1:
                     url += f"&page={page_num}"
                     
@@ -506,108 +580,66 @@ class GlintsScraper(JobScraper):
 
 
 class KalibrrScraper(JobScraper):
+    uses_browser = False
+    """Kalibrr lewat JSON API internal (tanpa browser): lebih cepat & tidak bergantung selector HTML.
+    Halaman /job-board?q= lama sudah di-redirect ke homepage sehingga scraper HTML menghasilkan 0 lowongan."""
+
+    API = "https://www.kalibrr.com/kjs/job_board/search"
+
     def scrape(self, max_jobs=10, location="Indonesia", keyword=""):
-        def task(page):
-            print(f"Navigating to Kalibrr (Keyword: '{keyword}', Location: '{location}')...")
-            import urllib.parse
-            q_keyword = urllib.parse.quote(keyword)
-            q_location = urllib.parse.quote(location)
-            
-            raw_gathered_links = set()
-            page_num = 1
-            max_pages = min(8, max(2, max_jobs // 5))
-            
-            while page_num <= max_pages:
-                url = f"https://www.kalibrr.com/id-ID/job-board?q={q_keyword}&location={q_location}&page={page_num}"
-                print(f"Loading Kalibrr search page {page_num}...")
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_timeout(4000)
-                    
-                    for _ in range(3):
-                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        page.wait_for_timeout(1000)
-                        
-                    content = page.content()
-                    soup = BeautifulSoup(content, 'html.parser')
-                    
-                    page_links = set()
-                    for a in soup.find_all('a', href=True):
-                        href = a['href']
-                        if "/c/" in href and "/jobs/" in href:
-                            if not href.startswith("http"):
-                                href = "https://www.kalibrr.com" + href
-                            page_links.add(href)
-                            
-                    if not page_links:
-                        print("No job links found on this Kalibrr page. Stopping pagination.")
-                        break
-                        
-                    raw_gathered_links.update(page_links)
-                    print(f"Kalibrr: Gathered {len(raw_gathered_links)} total raw links so far...")
-                    page_num += 1
-                except Exception as pe:
-                    print(f"Kalibrr page {page_num} error: {pe}")
+        import requests
+        import urllib.parse
+        region = REGIONS.get(location.lower(), {})
+        country = region.get("kalibrr")
+        if not country:
+            print(f"Kalibrr tidak mendukung region '{location}' (hanya Indonesia & Philippines). Dilewati.")
+            return
+        self.remote_only = location.lower() != HOME_REGION.lower()
+        print(f"Kalibrr API (Keyword: '{keyword}', Country: '{country}', remote_only={self.remote_only})...")
+
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        added, offset, limit = 0, 0, 50
+        while added < max_jobs and offset < 500:
+            params = {"limit": limit, "offset": offset, "country": country}
+            if keyword:
+                params["text"] = keyword
+            if self.remote_only:
+                params["is_work_from_home"] = "true"
+            try:
+                res = requests.get(self.API, params=params, headers=headers, timeout=20)
+                res.raise_for_status()
+                jobs = res.json().get("jobs", [])
+            except Exception as e:
+                print(f"Kalibrr API error (offset {offset}): {e}")
+                break
+            if not jobs:
+                break
+
+            for j in jobs:
+                if added >= max_jobs:
                     break
-            
-            unseen_links = [link for link in list(raw_gathered_links) if link not in self.seen_urls]
-            links = unseen_links[:max_jobs]
-            print(f"Found {len(links)} NEW Kalibrr job links to scrape (out of {len(raw_gathered_links)} raw links).")
-            
-            import requests
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            
-            for link in links:
-                try:
-                    company = "Unknown Company"
-                    match = re.search(r'/c/([^/]+)/jobs/', link)
-                    if match:
-                        company = match.group(1).replace('-', ' ').title()
-                        
-                    res = requests.get(link, headers=headers, timeout=15)
-                    if res.status_code == 200:
-                        job_soup = BeautifulSoup(res.text, 'html.parser')
-                        title_elem = job_soup.find('h1')
-                        title = title_elem.text.strip() if title_elem else "Unknown Title"
-                        
-                        h2_elems = job_soup.find_all('h2')
-                        for h2 in h2_elems:
-                            text = h2.text.strip()
-                            text_lower = text.lower()
-                            if not any(kw in text_lower for kw in ['deskripsi', 'description', 'kualifikasi', 'qualification', 'persyaratan', 'requirement', 'ringkasan', 'summary', 'tentang', 'about', 'kandidat', 'rekomendasi', 'lokasi', 'location', 'jobs']):
-                                company = text
-                                break
-                        
-                        desc_parts = job_soup.find_all(class_=re.compile(r'css-hrhjkp|description|job-description', re.I))
-                        if desc_parts:
-                            description = "\n".join([part.get_text(separator='\n').strip() for part in desc_parts])
-                        else:
-                            desc_elem = job_soup.find('article') or job_soup.find('main')
-                            description = desc_elem.get_text(separator='\n').strip() if desc_elem else ""
-                        
-                        salary = self.extract_salary(job_soup, "Kalibrr")
-                        if title != "Unknown Title" and description:
-                            self.add_job(title, company, "Kalibrr", link, description, salary=salary)
-                            print(f"[Kalibrr] Scraped: {title} at {company}")
-                            continue
-                            
-                    page.goto(link, wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_timeout(1500)
-                    job_soup = BeautifulSoup(page.content(), 'html.parser')
-                    title_elem = job_soup.find('h1')
-                    title = title_elem.text.strip() if title_elem else "Unknown Title"
-                    desc_elem = job_soup.find('article') or job_soup.find('main')
-                    description = desc_elem.get_text(separator='\n').strip() if desc_elem else ""
-                    salary = self.extract_salary(job_soup, "Kalibrr")
-                    if title != "Unknown Title" and description:
-                        self.add_job(title, company, "Kalibrr", link, description, salary=salary)
-                        print(f"[Kalibrr Browser Fallback] Scraped: {title} at {company}")
-                except Exception as e:
-                    print(f"Error scraping Kalibrr job {link}: {e}")
-                    
-        self.run_playwright(task)
+                code = (j.get("company_info") or j.get("company") or {}).get("code")
+                if not (code and j.get("id") and j.get("slug")):
+                    continue
+                url = f"https://www.kalibrr.com/id-ID/c/{code}/jobs/{j['id']}/{j['slug']}"
+                if url in self.seen_urls:
+                    continue
+                desc = BeautifulSoup(j.get("description") or "", "html.parser").get_text(separator="\n")
+                quals = BeautifulSoup(j.get("qualifications") or "", "html.parser").get_text(separator="\n")
+                description = desc + ("\n\nKualifikasi:\n" + quals if quals.strip() else "")
+                salary = None
+                if j.get("base_salary") or j.get("maximum_salary"):
+                    salary = self.format_salary_from_schema(
+                        j.get("salary_currency") or "IDR", j.get("base_salary"), j.get("maximum_salary"), j.get("salary_interval"))
+                company = j.get("company_name") or (j.get("company_info") or {}).get("name") or code.replace("-", " ").title()
+                skills = [x.get("name") if isinstance(x, dict) else str(x) for x in (j.get("job_sds_skills") or [])]
+                before = len(self.seen_urls)
+                self.add_job(j.get("name"), company, "Kalibrr", url, description, skills=skills or None,
+                             salary=salary, is_remote=bool(j.get("is_work_from_home")) if self.remote_only else None)
+                added += len(self.seen_urls) - before
+            offset += limit
+            time.sleep(random.uniform(0.5, 1.2))
+        print(f"Kalibrr: {added} lowongan baru.")
 
 
 class JobstreetScraper(JobScraper):
@@ -617,19 +649,35 @@ class JobstreetScraper(JobScraper):
             import urllib.parse
             q_keyword = urllib.parse.quote(keyword)
             q_location = urllib.parse.quote(location)
+            region = REGIONS.get(location.lower())
+            if not region:
+                print(f"Region '{location}' tidak dikenal untuk Jobstreet. Dilewati.")
+                return
+            self.remote_only = location.lower() != HOME_REGION.lower()
+            base = region["jobstreet"]
+            slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-") or "remote"
             
+            # Path /remote Jobstreet hanya pencarian lunak -> banyak hasil tidak remote; periksa lebih banyak kandidat
+            want = max_jobs * 4 if self.remote_only else max_jobs
             scraped_links = set()
             page_num = 1
             max_pages = 4 # Deep pagination search (up to 4 pages)
             
-            while len(scraped_links) < max_jobs and page_num <= max_pages:
-                url = f"https://www.jobstreet.co.id/id/job-search/{q_keyword}-jobs-in-{q_location}"
+            while len(scraped_links) < want and page_num <= max_pages:
+                if self.remote_only:
+                    url = f"{base}/{slug}-jobs/remote"   # filter remote bawaan Jobstreet (region non-Indonesia)
+                else:
+                    url = f"{base}/id/job-search/{q_keyword}-jobs-in-{q_location}"
                 if page_num > 1:
                     url += f"?page={page_num}"
                     
                 print(f"Loading Jobstreet search page {page_num}...")
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    except Exception:
+                        page.wait_for_timeout(3000)  # sesekali NS_ERROR_ABORT akibat redirect domain: coba sekali lagi
+                        page.goto(url, wait_until="domcontentloaded", timeout=60000)
                     page.wait_for_timeout(3000)
                     
                     for _ in range(3):
@@ -644,7 +692,8 @@ class JobstreetScraper(JobScraper):
                         href = a['href']
                         if "/job/" in href:
                             if not href.startswith("http"):
-                                href = "https://www.jobstreet.co.id" + href
+                                href = (urllib.parse.urljoin(page.url, href) if self.remote_only
+                                        else "https://www.jobstreet.co.id" + href)
                             clean_href = href.split('?')[0]
                             if clean_href not in self.seen_urls:
                                 current_links.append(clean_href)
@@ -661,13 +710,20 @@ class JobstreetScraper(JobScraper):
                     print(f"Jobstreet page {page_num} loading error: {pe}")
                     break
             
-            links = list(scraped_links)[:max_jobs]
+            links = list(scraped_links)[:want]
             print(f"Found {len(links)} Jobstreet job links to scrape.")
             
+            added = 0
             for link in links:
+                if self.remote_only and added >= max_jobs:
+                    break
                 try:
                     normalized_link = link.split('?')[0]
-                    page.goto(normalized_link, wait_until="domcontentloaded", timeout=30000)
+                    try:
+                        page.goto(normalized_link, wait_until="domcontentloaded", timeout=30000)
+                    except Exception:
+                        page.wait_for_timeout(4000)  # NS_ERROR_ABORT sesekali muncul saat redirect/challenge; coba sekali lagi
+                        page.goto(normalized_link, wait_until="domcontentloaded", timeout=30000)
                     page.wait_for_timeout(2000)
                     
                     job_soup = BeautifulSoup(page.content(), 'html.parser')
@@ -735,7 +791,9 @@ class JobstreetScraper(JobScraper):
                     
                     salary = self.extract_salary(job_soup, "Jobstreet")
                     if title != "Unknown Title" and description:
+                        before = len(self.seen_urls)
                         self.add_job(title, company, "Jobstreet", normalized_link, description, salary=salary)
+                        added += len(self.seen_urls) - before
                 except Exception as e:
                     print(f"Error scraping Jobstreet job {link}: {e}")
                     
@@ -743,20 +801,25 @@ class JobstreetScraper(JobScraper):
 
 
 class LinkedInScraper(JobScraper):
+    keyword_delay = (25, 45)  # ~16 keyword beruntun memicu rate-limit (hasil kosong / NS_ERROR_NET_EMPTY_RESPONSE)
+
     def scrape(self, max_jobs=10, location="Indonesia", keyword=""):
         def task(page):
             print(f"Navigating to LinkedIn Jobs (Keyword: '{keyword}', Location: '{location}')...")
             import urllib.parse
             q_keyword = urllib.parse.quote(keyword)
             q_location = urllib.parse.quote(location)
+            self.remote_only = location.lower() != HOME_REGION.lower()
+            wt = "&f_WT=2" if self.remote_only else ""   # filter resmi LinkedIn: Remote
             
             raw_gathered_links = set()
+            retried = False
             start_offset = 0
             max_pages = min(8, max(2, max_jobs // 5))
             page_count = 0
             
             while page_count < max_pages:
-                url = f"https://www.linkedin.com/jobs/search?keywords={q_keyword}&location={q_location}&start={start_offset}"
+                url = f"https://www.linkedin.com/jobs/search?keywords={q_keyword}&location={q_location}{wt}&start={start_offset}"
                 print(f"Loading LinkedIn search offset {start_offset} (Page {page_count + 1})...")
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -776,6 +839,11 @@ class LinkedInScraper(JobScraper):
                             clean_href = href.split('?')[0]
                             page_links.add(clean_href)
                             
+                    if not page_links and start_offset == 0 and not retried:
+                        retried = True  # halaman pertama kosong biasanya rate-limit sesaat: tunggu lalu coba lagi sekali
+                        print("LinkedIn: hasil kosong, menunggu lalu mencoba lagi sekali...")
+                        page.wait_for_timeout(random.randint(8000, 14000))
+                        continue
                     if not page_links:
                         print("No job links found on this offset. Stopping LinkedIn pagination.")
                         break
@@ -804,6 +872,7 @@ class LinkedInScraper(JobScraper):
                     job_ids = re.findall(r'\d{8,}', link)
                     if job_ids:
                         job_id = job_ids[-1]
+                        time.sleep(random.uniform(1.5, 3.5))  # jeda acak antar detail request
                         api_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
                         res = requests.get(api_url, headers=headers, timeout=15)
                         if res.status_code == 200:
@@ -823,7 +892,7 @@ class LinkedInScraper(JobScraper):
                             
                             salary = self.extract_salary(job_soup, "LinkedIn")
                             if title != "Unknown Title" and description:
-                                self.add_job(title, company, "LinkedIn", link, description, salary=salary)
+                                self.add_job(title, company, "LinkedIn", link, description, salary=salary, is_remote=True if self.remote_only else None)
                                 print(f"[LinkedIn API] Scraped: {title} at {company}")
                                 continue
                     
@@ -846,7 +915,7 @@ class LinkedInScraper(JobScraper):
                     
                     salary = self.extract_salary(job_soup, "LinkedIn")
                     if title != "Unknown Title" and description:
-                        self.add_job(title, company, "LinkedIn", link, description, salary=salary)
+                        self.add_job(title, company, "LinkedIn", link, description, salary=salary, is_remote=True if self.remote_only else None)
                         print(f"[LinkedIn Browser Fallback] Scraped: {title} at {company}")
                 except Exception as e:
                     print(f"Error scraping LinkedIn job {link}: {e}")
@@ -861,6 +930,8 @@ if __name__ == "__main__":
     parser.add_argument("--headless", action="store_true", default=True, help="Run browser in headless mode")
     parser.add_argument("--location", type=str, default="Indonesia", help="Location to search jobs for (e.g. Indonesia, Singapore, United States)")
     parser.add_argument("--keyword", type=str, default="", help="Keyword to search jobs for (e.g. 'Software Engineer')")
+    parser.add_argument("--remote-regions", type=str, default="Singapore,Malaysia,Philippines", help="Region lain (koma dipisah) yang hanya diambil lowongan REMOTE-nya. Negara apa pun didukung LinkedIn (mis. 'United States,United Kingdom,Germany'); Glints/Jobstreet/Kalibrr hanya Asia Tenggara & akan dilewati untuk region lain. Kosongkan untuk menonaktifkan")
+    parser.add_argument("--skip-home", action="store_true", help="Lewati region utama (--location); hanya jalankan --remote-regions (untuk dipecah jadi task terpisah)")
     args = parser.parse_args()
 
     platform = args.platform.lower()
@@ -880,29 +951,42 @@ if __name__ == "__main__":
     if platform in ["all", "linkedin"]:
         scrapers.append(LinkedInScraper(headless=args.headless))
 
+    remote_regions = [r.strip() for r in args.remote_regions.split(",") if r.strip() and r.strip().lower() != location.lower()]
+    # Data engineering & sejenisnya dulu (prioritas), lalu kategori umum
+    PRIORITY_KEYWORDS = ["Data Engineer", "Data Analyst", "Data Scientist", "Analytics Engineer"]
+    GENERAL_KEYWORDS = [
+        "Software Engineer", "Data Entry", "Digital Marketing", "Graphic Designer",
+        "Project Manager", "Sales", "Human Resources", "Content Creator",
+        "Business Development", "Accountant", "Customer Service", "Social Media Specialist"
+    ]
+    REMOTE_KEYWORDS = ["Data Engineer", "Data Analyst", "Software Engineer"]
+
+    def run_scrape(scraper, loc, kws, per_kw):
+        scraper.remote_only = loc.lower() != HOME_REGION.lower()
+        for i, kw in enumerate(kws):
+            if i and scraper.keyword_delay:
+                time.sleep(random.uniform(*scraper.keyword_delay))
+            print(f"\n[{scraper.__class__.__name__.replace('Scraper','')} | {loc}{' remote-only' if scraper.remote_only else ''} | '{kw}']")
+            try:
+                scraper.scrape(max_jobs=per_kw, location=loc, keyword=kw)
+            except Exception as se:
+                print(f"Error scraping '{kw}' di {loc}: {se}")
+            scraper.save_to_json("jobs_data.json")
+
     for scraper in scrapers:
         platform_name = scraper.__class__.__name__.replace("Scraper", "")
         print(f"\n--- Scraping {platform_name} ---")
-        
-        # Rotasi keyword jika parameter keyword kosong untuk mendapatkan data yang bervariasi
-        if not keyword:
-            keywords_to_run = [
-                "Software Engineer", "Data Entry", "Digital Marketing", "Graphic Designer", 
-                "Project Manager", "Sales", "Human Resources", "Content Creator", 
-                "Business Development", "Accountant", "Customer Service", "Social Media Specialist"
-            ]
-            jobs_per_keyword = max(5, max_jobs // len(keywords_to_run))
-            print(f"No specific keyword provided. Rotating through {len(keywords_to_run)} high-value categories ({jobs_per_keyword} jobs per keyword)...")
-            
-            for kw in keywords_to_run:
-                print(f"\n[Keyword: '{kw}']")
-                try:
-                    scraper.scrape(max_jobs=jobs_per_keyword, location=location, keyword=kw)
-                except Exception as se:
-                    print(f"Error scraping {platform_name} with keyword '{kw}': {se}")
-        else:
-            scraper.scrape(max_jobs=max_jobs, location=location, keyword=keyword)
-            
-        scraper.save_to_json("jobs_data.json")
 
-    print("\nScraping complete.")
+        with scraper.session():
+            if args.skip_home:
+                pass
+            elif keyword:
+                run_scrape(scraper, location, [keyword], max_jobs)
+            else:
+                kws = PRIORITY_KEYWORDS + GENERAL_KEYWORDS
+                print(f"Tanpa keyword: {len(PRIORITY_KEYWORDS)} keyword data diprioritaskan + {len(GENERAL_KEYWORDS)} kategori umum")
+                run_scrape(scraper, location, kws, max(5, max_jobs // len(kws)))
+            for region in remote_regions:
+                kws = [keyword] if keyword else REMOTE_KEYWORDS
+                run_scrape(scraper, region, kws, max_jobs if keyword else max(5, max_jobs // len(kws)))
+        scraper.remote_only = False
