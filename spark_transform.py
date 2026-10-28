@@ -1,9 +1,21 @@
 import os
 import json
+import fcntl
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, size, array_distinct, trim, when, regexp_replace, array_remove, transform, lower, split, flatten, array
 
 def run_spark_transformation(filepath="jobs_data.json"):
+    """Jalankan transformasi dengan lock file yang sama dengan scraper & salary_refetch.
+
+    Transformasi membaca seluruh file lalu menimpanya (~puluhan detik kemudian). Tanpa lock, lowongan yang
+    disimpan scraper di jeda itu akan hilang tertimpa salinan lama. Scraper yang mau menyimpan akan menunggu lock.
+    """
+    with open(filepath + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _run_spark_transformation(filepath)
+
+
+def _run_spark_transformation(filepath):
     if not os.path.exists(filepath):
         print(f"Error: File {filepath} tidak ditemukan untuk transformasi Spark.")
         return False
@@ -101,8 +113,10 @@ def run_spark_transformation(filepath="jobs_data.json"):
         processed_jobs = [json.loads(row) for row in json_rows]
         
         # Write clean formatted JSON array
-        with open(filepath, 'w', encoding='utf-8') as f:
+        tmp_path = f"{filepath}.{os.getpid()}.tmp"   # tulis atomik: file tidak pernah setengah jadi
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(processed_jobs, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_path, filepath)
             
         print("Transformasi PySpark selesai dengan sukses.")
         return True
