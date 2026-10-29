@@ -32,12 +32,21 @@ with DAG(
     tags=['portfolio', 'scraping', 'etl'],
 ) as dag:
 
-    # Task 1: Indonesia (semua lowongan; keyword data engineering diprioritaskan).
-    # Kalibrr (API) menjalankan semua ~83 keyword tiap run; Glints/Jobstreet/LinkedIn (browser) mengerjakan
-    # 4 keyword data + 12 keyword bergilir dari pool 79 keyword (seluruh pool tuntas dalam ~7 run).
+    # Task 1a: Indonesia, platform BROWSER (Glints/Jobstreet/LinkedIn; semua lowongan, keyword data diprioritaskan).
+    # 4 keyword data + 12 keyword bergilir dari pool 79 keyword (seluruh pool tuntas dalam ~7 run). ~40 menit.
     scrape_jobs = BashOperator(
         task_id='scrape_jobs',
-        bash_command=f"cd {PROJECT_PATH} && source ../venv/bin/activate && python -u scraper.py --platform all --max-jobs 50 --remote-regions ''",
+        bash_command=(f"cd {PROJECT_PATH} && source ../venv/bin/activate && "
+                      "python -u scraper.py --platform glints,jobstreet,linkedin --max-jobs 50 --remote-regions ''"),
+        execution_timeout=timedelta(minutes=75),
+    )
+
+    # Task 1a': Indonesia, Kalibrr (JSON API, tanpa browser) berjalan PARALEL dengan scrape_jobs: semua ~83 keyword
+    # tiap run, 30 lowongan baru per keyword. Dipisah agar waktu 20-30 menitnya tidak menambah durasi scrape_jobs.
+    scrape_kalibrr = BashOperator(
+        task_id='scrape_kalibrr',
+        bash_command=(f"cd {PROJECT_PATH} && source ../venv/bin/activate && "
+                      "python -u scraper.py --platform kalibrr --remote-regions ''"),
         execution_timeout=timedelta(minutes=60),
     )
 
@@ -83,4 +92,4 @@ with DAG(
     )
 
     # Set task execution dependencies
-    scrape_jobs >> scrape_remote_sea >> scrape_remote_global >> transform_spark >> upload_supabase >> data_quality
+    [scrape_jobs, scrape_kalibrr] >> scrape_remote_sea >> scrape_remote_global >> transform_spark >> upload_supabase >> data_quality

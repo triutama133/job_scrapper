@@ -984,7 +984,7 @@ def rotating_keywords(window, state_file=ROTATION_STATE):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Job Scraper for Glints, Kalibrr, Jobstreet, and LinkedIn")
     parser.add_argument("--max-jobs", type=int, default=5, help="Maximum number of jobs to scrape per platform")
-    parser.add_argument("--platform", type=str, default="all", choices=["all", "glints", "kalibrr", "jobstreet", "linkedin"], help="Specific platform to scrape")
+    parser.add_argument("--platform", type=str, default="all", help="Platform: all, atau satu/lebih (dipisah koma) dari glints,kalibrr,jobstreet,linkedin")
     parser.add_argument("--headless", action="store_true", default=True, help="Run browser in headless mode")
     parser.add_argument("--location", type=str, default="Indonesia", help="Location to search jobs for (e.g. Indonesia, Singapore, United States)")
     parser.add_argument("--keyword", type=str, default="", help="Keyword to search jobs for (e.g. 'Software Engineer')")
@@ -995,6 +995,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     platform = args.platform.lower()
+    valid = {"all", "glints", "kalibrr", "jobstreet", "linkedin"}
+    chosen = {x.strip() for x in platform.split(",") if x.strip()}
+    if not chosen or not chosen <= valid:
+        parser.error(f"--platform tidak valid: {platform} (pilihan: {', '.join(sorted(valid))}, dipisah koma)")
     max_jobs = args.max_jobs
     location = args.location
     keyword = args.keyword
@@ -1002,13 +1006,13 @@ if __name__ == "__main__":
     print(f"Starting Job Scraper. Target: {platform.upper()}, Max Jobs: {max_jobs}, Location: '{location}', Keyword: '{keyword}'")
 
     scrapers = []
-    if platform in ["all", "glints"]:
+    if "all" in chosen or "glints" in chosen:
         scrapers.append(GlintsScraper(headless=args.headless))
-    if platform in ["all", "kalibrr"]:
+    if "all" in chosen or "kalibrr" in chosen:
         scrapers.append(KalibrrScraper(headless=args.headless))
-    if platform in ["all", "jobstreet"]:
+    if "all" in chosen or "jobstreet" in chosen:
         scrapers.append(JobstreetScraper(headless=args.headless))
-    if platform in ["all", "linkedin"]:
+    if "all" in chosen or "linkedin" in chosen:
         scrapers.append(LinkedInScraper(headless=args.headless))
 
     remote_regions = [r.strip() for r in args.remote_regions.split(",") if r.strip() and r.strip().lower() != location.lower()]

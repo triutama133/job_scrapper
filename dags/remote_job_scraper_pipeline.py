@@ -36,7 +36,7 @@ with DAG(
         bash_command=(
             f"cd {PROJECT_PATH} && source ../venv/bin/activate && "
             f"python -u remote_scraper.py "
-            f"--limit 25 --data-limit 200 "
+            f"--limit 100 --data-limit 200 "
             f"--upload-supabase"
         ),
         execution_timeout=timedelta(minutes=30),
