@@ -385,6 +385,15 @@ class JobScraper:
     def looks_remote(self, title, description):
         return bool(REMOTE_RE.search(title or "") or REMOTE_RE.search((description or "")[:1200]))
 
+    @staticmethod
+    def _salary_from_description(platform, description):
+        """LinkedIn sering menulis gaji hanya di teks deskripsi ("£55,000 - £75,000"). Portal lain punya field gaji terstruktur
+        (Glints/Kalibrr/Jobstreet) dan deskripsinya tidak menghasilkan tambahan, jadi fallback ini khusus LinkedIn."""
+        if not platform.startswith("LinkedIn"):
+            return None
+        from salary_utils import strict_salary_range
+        return strict_salary_range(description or "")
+
     def add_job(self, title, company, platform, url, description, job_desk=None, skills=None, salary=None, is_remote=None):
         if url in self.seen_urls:
             return
@@ -413,7 +422,7 @@ class JobScraper:
             "description": cleaned_desc,
             "job_desk": final_job_desk,
             "requirements": final_skills,
-            "salary": self.clean_salary_text(salary) if salary else None,
+            "salary": (self.clean_salary_text(salary) if salary else None) or self._salary_from_description(platform, cleaned_desc),
             # Penanda lowongan BARU: salary diambil langsung oleh scraper; salary_refetch hanya untuk data lama (tanpa penanda)
             "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }

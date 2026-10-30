@@ -351,13 +351,14 @@ def sync_salaries_to_supabase(supabase, jobs, dry_run=False):
     gagal (42P10) dan error ditelan -> salary tidak pernah sampai ke Supabase. Sekarang diff terhadap
     isi Supabase lalu UPDATE per id; karena membandingkan state, run berikutnya otomatis memperbaiki yang tertinggal.
     """
-    rows, off = [], 0
+    # Paginasi keyset (id > last ORDER BY id): .range() tanpa ORDER BY bisa melewatkan/mengulang baris saat tabel sedang ditulis
+    rows, last = [], -1
     while True:
-        chunk = supabase.table("jobs").select("id,job_url,salary").range(off, off + 999).execute().data
-        rows += chunk
-        off += 1000
-        if len(chunk) < 1000:
+        chunk = supabase.table("jobs").select("id,job_url,salary").gt("id", last).order("id").limit(1000).execute().data
+        if not chunk:
             break
+        rows += chunk
+        last = chunk[-1]["id"]
     sup = {r["job_url"]: r for r in rows}
     todo = [(sup[j["job_url"]]["id"], j["salary"]) for j in jobs
             if j.get("salary") and j.get("job_url") in sup and not sup[j["job_url"]]["salary"]]

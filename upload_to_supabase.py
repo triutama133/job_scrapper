@@ -118,17 +118,17 @@ def upload_jobs_to_supabase(filepath="jobs_data.json", records_to_upload=None, r
         # Mode Fallback: Ambil URL & ID yang sudah ada di Supabase untuk memisahkan data baru vs data lama
         print("Mengambil pemetaan job_url & id yang sudah ada di Supabase...")
         url_to_id = {}
-        page_size = 1000
-        for offset in range(0, 100000, page_size):
-            res = supabase.table("jobs").select("id, job_url").range(offset, offset + page_size - 1).execute()
+        last_id = -1
+        while True:
+            # keyset (id > last ORDER BY id): .range() tanpa ORDER BY bisa melewatkan baris saat tabel sedang ditulis
+            res = supabase.table("jobs").select("id, job_url").gt("id", last_id).order("id").limit(1000).execute()
             if not res.data:
                 break
             for r in res.data:
                 u = r.get("job_url")
                 if u:
                     url_to_id[u] = r.get("id")
-            if len(res.data) < page_size:
-                break
+            last_id = res.data[-1]["id"]
         print(f"Total URL terdaftar di Supabase: {len(url_to_id)}")
 
         new_records = [r for r in records if r.get("job_url") not in url_to_id]

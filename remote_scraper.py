@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper import JobScraper
 from remote_sources import SOURCES, PLATFORM_NAMES, DEFAULT_BOARDS, Http
+from salary_utils import strict_salary_range
 
 # Judul yang dianggap relevan untuk fokus Data Engineering / Data Platform
 DATA_TITLE_RE = re.compile(
@@ -188,7 +189,9 @@ class RemoteJobScraper(JobScraper):
             "is_active": True,
             "status_reason": "Active",
             "category": classify(title),
-            "salary": self.clean_salary_text(raw.get("salary")) if raw.get("salary") else None,
+            # Banyak ATS (Greenhouse/Ashby/TheMuse/WWR) menaruh rentang gaji hanya di teks deskripsi ("pay transparency"):
+            # bila API tidak memberi salary, ambil rentang penuh yang eksplisit dari deskripsi.
+            "salary": (self.clean_salary_text(raw.get("salary")) if raw.get("salary") else None) or strict_salary_range(desc),
             "source": "remote_scraper",
             "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
