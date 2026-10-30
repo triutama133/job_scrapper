@@ -74,13 +74,15 @@ def check_supabase(jobs):
     try:
         from supabase import create_client
         sb = create_client(url, key)
-        rows, off = [], 0
+        # Paginasi keyset (id > last ORDER BY id), BUKAN .range() tanpa ORDER BY: tanpa urutan, halaman bisa saling
+        # tumpang tindih saat baris sedang ditulis ulang (upload meng-upsert seluruh tabel) -> "duplikat" & "hilang" palsu.
+        rows, last = [], -1
         while True:
-            chunk = sb.table("jobs").select("job_url,salary").range(off, off + 999).execute().data
-            rows += chunk
-            off += 1000
-            if len(chunk) < 1000:
+            chunk = sb.table("jobs").select("id,job_url,salary").gt("id", last).order("id").limit(1000).execute().data
+            if not chunk:
                 break
+            rows += chunk
+            last = chunk[-1]["id"]
     except Exception as e:
         record("FAIL", "sinkron Supabase", f"tidak bisa membaca Supabase: {e}")
         return
