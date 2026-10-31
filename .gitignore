@@ -50,3 +50,4 @@ logs/
 salary_refetch_complete.flag
 scraper_state.json
 linkedin_not_remote.json
+supabase_sync_state.json*
