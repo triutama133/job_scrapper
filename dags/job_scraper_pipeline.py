@@ -50,21 +50,13 @@ with DAG(
         execution_timeout=timedelta(minutes=60),
     )
 
-    # Task 1b: Asia Tenggara lain, HANYA lowongan remote (Glints/Jobstreet/LinkedIn/Kalibrr)
-    scrape_remote_sea = BashOperator(
-        task_id='scrape_remote_sea',
-        bash_command=(f"cd {PROJECT_PATH} && source ../venv/bin/activate && "
-                      "python -u scraper.py --platform all --skip-home --max-jobs 30 "
-                      "--remote-regions 'Singapore,Malaysia,Philippines'"),
-        execution_timeout=timedelta(minutes=60),
-    )
-
-    # Task 1c: US/Eropa/negara lain, HANYA remote (hanya LinkedIn yang mendukung; portal SEA otomatis dilewati)
+    # Task 1b: LinkedIn pencarian 'Worldwide', HANYA remote. Negara tertentu (US/EU/SEA) dihapus: lowongan remote yang dibatasi
+    # negara ditolak (remote_eligibility), jadi hasilnya hampir selalu 0 dan memakan ~40 menit per run.
     scrape_remote_global = BashOperator(
         task_id='scrape_remote_global',
         bash_command=(f"cd {PROJECT_PATH} && source ../venv/bin/activate && "
                       "python -u scraper.py --platform linkedin --skip-home --max-jobs 30 "
-                      "--remote-regions 'United States,Canada,United Kingdom,European Union,Netherlands,Poland,Australia,Worldwide'"),
+                      "--remote-regions 'Worldwide'"),
         execution_timeout=timedelta(minutes=60),
     )
 
@@ -92,4 +84,4 @@ with DAG(
     )
 
     # Set task execution dependencies
-    [scrape_jobs, scrape_kalibrr] >> scrape_remote_sea >> scrape_remote_global >> transform_spark >> upload_supabase >> data_quality
+    [scrape_jobs, scrape_kalibrr] >> scrape_remote_global >> transform_spark >> upload_supabase >> data_quality
