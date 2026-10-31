@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from scraper import JobScraper
 from remote_sources import SOURCES, PLATFORM_NAMES, DEFAULT_BOARDS, Http
 from salary_utils import strict_salary_range
+from remote_eligibility import restriction_reason
 
 # Judul yang dianggap relevan untuk fokus Data Engineering / Data Platform
 DATA_TITLE_RE = re.compile(
@@ -173,6 +174,9 @@ class RemoteJobScraper(JobScraper):
 
         desc = self.clean_description(raw.get("description") or "")
         if len(desc.strip()) < 15:
+            return False
+        # Remote tapi dibatasi negara/wilayah ("Remote - US", "must be located in...") bukan lowongan nyata untuk pelamar Indonesia
+        if restriction_reason(raw.get("location"), desc, title=title):
             return False
 
         h_resp, h_skills = self.extract_skills_and_responsibilities(desc)

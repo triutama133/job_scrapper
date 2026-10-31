@@ -6,6 +6,7 @@ import re
 import argparse
 from bs4 import BeautifulSoup
 from camoufox.sync_api import Camoufox
+from remote_eligibility import restriction_reason
 
 HOME_REGION = "Indonesia"
 
@@ -25,6 +26,7 @@ class JobScraper:
 
     def __init__(self, headless=True, filepath="jobs_data.json"):
         self.remote_only = False
+        self.search_region = None   # negara pencarian saat remote_only (hasil = "remote di negara itu")
         self.headless = headless
         self.jobs = []
         self.seen_urls = set()
@@ -385,6 +387,12 @@ class JobScraper:
     def looks_remote(self, title, description):
         return bool(REMOTE_RE.search(title or "") or REMOTE_RE.search((description or "")[:1200]))
 
+    def not_open_reason(self, title, description):
+        """Region non-Indonesia: lowongan remote yang dibatasi negara/wilayah ("Remote - US", "must be located in...")
+        bukan lowongan nyata untuk pelamar Indonesia. Hasil pencarian per-negara dianggap "remote di negara itu"
+        kecuali teks menyebut sinyal global (worldwide/APAC/Asia/Indonesia). None = boleh disimpan."""
+        return restriction_reason(None, description, implicit_region=self.search_region or "foreign region", title=title)
+
     @staticmethod
     def _salary_from_description(platform, description):
         """LinkedIn sering menulis gaji hanya di teks deskripsi ("£55,000 - £75,000"). Portal lain punya field gaji terstruktur
@@ -399,6 +407,8 @@ class JobScraper:
             return
         # Region non-Indonesia: hanya remote. is_remote dari flag resmi situs bila ada, selain itu deteksi teks.
         if self.remote_only and not (is_remote or (is_remote is None and self.looks_remote(title, description))):
+            return
+        if self.remote_only and self.not_open_reason(title, description):
             return
         
         # Clean description of any dynamic UI junk lines first
@@ -503,6 +513,7 @@ class GlintsScraper(JobScraper):
                 return
             cc = region["glints"]
             self.remote_only = location.lower() != HOME_REGION.lower()
+            self.search_region = location if self.remote_only else None
             
             scraped_links = set()
             # Tanpa login Glints hanya memberi halaman 1 (30 hasil; halaman 2+ -> "please login"). Agar tidak terus
@@ -594,6 +605,7 @@ class KalibrrScraper(JobScraper):
             print(f"Kalibrr tidak mendukung region '{location}' (hanya Indonesia & Philippines). Dilewati.")
             return
         self.remote_only = location.lower() != HOME_REGION.lower()
+        self.search_region = location if self.remote_only else None
         print(f"Kalibrr API (Keyword: '{keyword}', Country: '{country}', remote_only={self.remote_only})...")
 
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -659,6 +671,7 @@ class JobstreetScraper(JobScraper):
                 print(f"Region '{location}' tidak dikenal untuk Jobstreet. Dilewati.")
                 return
             self.remote_only = location.lower() != HOME_REGION.lower()
+            self.search_region = location if self.remote_only else None
             base = region["jobstreet"]
             slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-") or "remote"
             
@@ -807,6 +820,39 @@ class JobstreetScraper(JobScraper):
 
 class LinkedInScraper(JobScraper):
     keyword_delay = (25, 45)  # ~16 keyword beruntun memicu rate-limit (hasil kosong / NS_ERROR_NET_EMPTY_RESPONSE)
+    REJECTED_FILE = "linkedin_not_remote.json"   # URL non-remote yang sudah ditolak, agar tidak diambil ulang tiap run
+    REJECTED_KEEP = 30000
+
+    def linkedin_is_remote(self, link, title, description, headers, page_html=None):
+        """Region non-Indonesia: filter f_WT=2 LinkedIn tidak dijamin (hasil sering diisi lowongan non-remote), jadi
+        jangan percaya otomatis. Remote bila teks menyebut remote, atau halaman lowongan penuh membawa penanda resmi
+        jobLocationType=TELECOMMUTE (tidak ada di fragmen jobPosting yang dipakai untuk deskripsi)."""
+        if self.looks_remote(title, description):
+            return True
+        html = page_html
+        if html is None:
+            import requests
+            try:
+                time.sleep(random.uniform(1.0, 2.0))
+                res = requests.get(link.split("?")[0], headers=headers, timeout=15)
+                html = res.text if res.status_code == 200 else ""
+            except Exception:
+                html = ""
+        return "TELECOMMUTE" in html
+
+    def load_rejected(self):
+        try:
+            with open(self.REJECTED_FILE, "r", encoding="utf-8") as f:
+                return list(json.load(f))
+        except (OSError, ValueError):
+            return []
+
+    def save_rejected(self, previous, new):
+        merged = list(dict.fromkeys(previous + sorted(new)))[-self.REJECTED_KEEP:]
+        tmp = f"{self.REJECTED_FILE}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(merged, f)
+        os.replace(tmp, self.REJECTED_FILE)
 
     def scrape(self, max_jobs=10, location="Indonesia", keyword=""):
         def task(page):
@@ -815,6 +861,7 @@ class LinkedInScraper(JobScraper):
             q_keyword = urllib.parse.quote(keyword)
             q_location = urllib.parse.quote(location)
             self.remote_only = location.lower() != HOME_REGION.lower()
+            self.search_region = location if self.remote_only else None
             wt = "&f_WT=2" if self.remote_only else ""   # filter resmi LinkedIn: Remote
             
             raw_gathered_links = set()
@@ -862,10 +909,12 @@ class LinkedInScraper(JobScraper):
                     print(f"LinkedIn offset {start_offset} error: {e}")
                     break
             
-            unseen_links = [link for link in list(raw_gathered_links) if link not in self.seen_urls]
+            rejected_before = self.load_rejected() if self.remote_only else []
+            rejected_now = set()
+            unseen_links = [link for link in list(raw_gathered_links) if link not in self.seen_urls and link not in rejected_before]
             links = unseen_links[:max_jobs]
             print(f"Found {len(links)} NEW LinkedIn job links to scrape (out of {len(raw_gathered_links)} raw links).")
-            
+
             import requests
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -897,14 +946,20 @@ class LinkedInScraper(JobScraper):
                             
                             salary = self.extract_salary(job_soup, "LinkedIn")
                             if title != "Unknown Title" and description:
-                                self.add_job(title, company, "LinkedIn", link, description, salary=salary, is_remote=True if self.remote_only else None)
+                                remote = self.linkedin_is_remote(link, title, description, headers) if self.remote_only else None
+                                if remote is False or (self.remote_only and self.not_open_reason(title, description)):
+                                    rejected_now.add(link)
+                                    print(f"[LinkedIn API] Dilewati (bukan remote / dibatasi negara): {title} at {company}")
+                                    continue
+                                self.add_job(title, company, "LinkedIn", link, description, salary=salary, is_remote=remote)
                                 print(f"[LinkedIn API] Scraped: {title} at {company}")
                                 continue
                     
                     page.goto(link, wait_until="domcontentloaded", timeout=20000)
                     page.wait_for_timeout(1500)
                     
-                    job_soup = BeautifulSoup(page.content(), 'html.parser')
+                    page_html = page.content()
+                    job_soup = BeautifulSoup(page_html, 'html.parser')
                     title_elem = job_soup.find(class_=re.compile(r'topcard__title|top-card-layout__title|h1', re.I)) or job_soup.find('h1')
                     title = title_elem.text.strip() if title_elem else "Unknown Title"
                     
@@ -920,11 +975,20 @@ class LinkedInScraper(JobScraper):
                     
                     salary = self.extract_salary(job_soup, "LinkedIn")
                     if title != "Unknown Title" and description:
-                        self.add_job(title, company, "LinkedIn", link, description, salary=salary, is_remote=True if self.remote_only else None)
+                        remote = self.linkedin_is_remote(link, title, description, headers, page_html=page_html) if self.remote_only else None
+                        if remote is False or (self.remote_only and self.not_open_reason(title, description)):
+                            rejected_now.add(link)
+                            print(f"[LinkedIn Browser Fallback] Dilewati (bukan remote / dibatasi negara): {title} at {company}")
+                            continue
+                        self.add_job(title, company, "LinkedIn", link, description, salary=salary, is_remote=remote)
                         print(f"[LinkedIn Browser Fallback] Scraped: {title} at {company}")
                 except Exception as e:
                     print(f"Error scraping LinkedIn job {link}: {e}")
-                    
+
+            if self.remote_only and rejected_now:
+                self.save_rejected(rejected_before, rejected_now)
+                print(f"LinkedIn: {len(rejected_now)} lowongan non-remote dicatat agar tidak diambil ulang.")
+
         self.run_playwright(task)
 
 
@@ -1029,6 +1093,7 @@ if __name__ == "__main__":
 
     def run_scrape(scraper, loc, kws, per_kw):
         scraper.remote_only = loc.lower() != HOME_REGION.lower()
+        scraper.search_region = loc if scraper.remote_only else None
         for i, kw in enumerate(kws):
             if i and scraper.keyword_delay:
                 time.sleep(random.uniform(*scraper.keyword_delay))
@@ -1061,3 +1126,4 @@ if __name__ == "__main__":
                 kws = [keyword] if keyword else REMOTE_KEYWORDS
                 run_scrape(scraper, region, kws, max_jobs if keyword else max(5, max_jobs // len(kws)))
         scraper.remote_only = False
+        scraper.search_region = None
