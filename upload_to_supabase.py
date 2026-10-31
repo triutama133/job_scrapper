@@ -7,6 +7,17 @@ import argparse
 
 JUNK_DESC_KEYWORD = "bergabunglah dengan jutaan pencari kerja di seluruh dunia"
 
+# Lowongan nonaktif tidak ditampilkan di web app; job_desk/requirements tetap lengkap untuk bahan belajar LLM
+# (fallback LLM hanya memakai 300 karakter pertama deskripsi). Teks penuh tetap di jobs_data.json (Pi)
+# agar Supabase free plan (500 MB) tidak penuh.
+INACTIVE_DESC_CHARS = 300
+
+def supabase_description(job):
+    desc = job.get("description") or ""
+    if job.get("is_active") is False:
+        return desc[:INACTIVE_DESC_CHARS]
+    return desc
+
 def upload_jobs_to_supabase(filepath="jobs_data.json", records_to_upload=None, repaired_only=False, urls=None, batch_size=100):
     # Load environment variables from .env
     load_dotenv()
@@ -61,7 +72,7 @@ def upload_jobs_to_supabase(filepath="jobs_data.json", records_to_upload=None, r
             "company": job.get("company", "Unknown Company"),
             "platform": job.get("platform", "Unknown Platform"),
             "job_url": job.get("job_url"),
-            "description": job.get("description", ""),
+            "description": supabase_description(job),
             "job_desk": job.get("job_desk", []),       # Lists will automatically format to JSONB array
             "requirements": job.get("requirements", []),
             "is_active": job.get("is_active", True),
